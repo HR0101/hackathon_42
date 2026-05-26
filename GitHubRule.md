@@ -1,6 +1,6 @@
 ```markdown
 
-# GitHub と Git コマンド完全ガイド（チーム開発初心者向け）
+# GitHubとGitコマンドガイド
 
 ## はじめに
 
