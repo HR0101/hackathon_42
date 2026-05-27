@@ -61,7 +61,7 @@ Git の仕組みを利用したWeb上のホスティングサービス．リポ�
 2. git pull origin main
 3. git checkout 自分のブランチ
 4．git merge main
-
+jjjjjjjjj
 
 この流れを **1機能ごとに繰り返す**のが基本です．
 ```
