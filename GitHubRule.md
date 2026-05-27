@@ -4,6 +4,11 @@
 
 このガイドは，GitHub と Git の基本から実践的な使い方までをまとめたものです．
 
+# 1 
+```
+git checkout main && git pull origin main && git checkout 自分のブランチ && git merge main
+```
+
 # 2 開発の全体的な流れ（**再開時**）
 ## 1
 ```
