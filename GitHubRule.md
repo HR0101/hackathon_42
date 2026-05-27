@@ -4,9 +4,14 @@
 
 このガイドは，GitHub と Git の基本から実践的な使い方までをまとめたものです．
 
-# 1 
+# 1 連続コマンド　
+開始時
 ```
 git checkout main && git pull origin main && git checkout 自分のブランチ && git merge main
+```
+再開時
+```
+git add . && git commit -m "コメント" && git push origin 自分のブランチ
 ```
 
 # 2 開発の全体的な流れ（**再開時**）
@@ -80,26 +85,7 @@ Pull Request 作成
 ```
 ブランチ削除
 ```
-# 2.1 開発の全体的な流れ（**再開時**）
-## 1
-```
-git checkout main
-```
-## 2
-```
-git pull origin main
-```
-## 3
-```
-git checkout 自分のブランチ
-```
-## 4
-```
-git merge main
 
-```
-
-この流れを**1機能ごとに繰り返す**のが基本です．
 
 
 
