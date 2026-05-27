@@ -11,7 +11,7 @@ git checkout main && git pull origin main && git checkout 自分のブランチ 
 ```
 再開時
 ```
-git add . && git commit -m "コメント" && git push origin 自分のブランチ
+git add . && git commit -m "コメント" && git push -u origin 自分のブランチ
 ```
 
 # 2 開発の全体的な流れ（**再開時**）
