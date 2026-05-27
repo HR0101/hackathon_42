@@ -7,44 +7,69 @@
 
 # 2. 開発の全体的な流れ（フロー）
 
-1. 
+## 1
 ```bash
-git clone       # ← リモートからローカルにコピー（初回のみ）
+git clone      
 ```
+ ↑ リモートからローカルにコピー（初回のみ）
+ ## 2
 ```bash
-git checkout -b  # ← 作業用ブランチを作成
+git checkout -b  
 ```
+↑　作業用ブランチを作成
+## 3
 ```
 ファイルを編集
 ```
+## 4
 ```bash
-git add .        # ← 変更をステージング
+git add .       
 ```
+↑変更をステージング
+## 5
 ```bash
-git commit -m "コメントなんでも"             # ← ローカルに記録
+git commit -m "コメントなんでも"             
 ```
+↑ ローカルに記録
+## 6
 ```bash
-git push　-u origin 自分のブランチ名         # ← リモートに送信
+git push　-u origin 自分のブランチ名        
 ```
+↑リモートに送信
+## 7
 ```bash
-Pull Request 作成  #← レビュー依頼
+Pull Request 作成  
 ```
+↑レビュー依頼
+## 8
 ```bash
 レビュー・修正
 ```
+## 9
 ```bash
-マージ            # ← main に統合
+マージ            
 ```
+↑main に統合
+## 10
 ```
 ブランチ削除
 ```
 # 2.1 開発の全体的な流れ（**再開時**）
-
+## 1
 ```
-1. git checkout main
-2. git pull origin main
-3. git checkout 自分のブランチ
-4．git merge main
+git checkout main
+```
+## 2
+```
+git pull origin main
+```
+## 3
+```
+git checkout 自分のブランチ
+```
+## 4
+```
+git merge main
 
 ```
 
