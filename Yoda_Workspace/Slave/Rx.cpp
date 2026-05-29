@@ -80,22 +80,85 @@ void Rx::onEdge() {
     const uint32_t interval = now - _prevTime;  // 前回 FALLING からの経過 [µs]
     _prevTime = now;                            // 次回の計算のために更新
 
+    // ── デバッグカウンタ更新 ──────────────────────────────
+    _dbgEdgeCount++;
+    _dbgLastInterval = interval;
+    if (interval > _dbgMaxInterval) _dbgMaxInterval = interval;
+
+    // インターバルヒストグラム (6バケット)
+    //   [0] <   700 µs   ノイズ
+    //   [1]  700-1600 µs  ビット '0' 帯域
+    //   [2] 1600-3000 µs  ビット '1' 帯域
+    //   [3] 3000-11000 µs 中間帯域 (AGC 分割の証拠)
+    //   [4] 11000-16000 µs リーダー帯域
+    //   [5] > 16000 µs   起動直後 / パケット間専用
+    if      (interval <  700)   _dbgHist[0]++;
+    else if (interval <  1600)  _dbgHist[1]++;
+    else if (interval <  3000)  _dbgHist[2]++;
+    else if (interval <  11000) _dbgHist[3]++;
+    else if (interval <= 16000) _dbgHist[4]++;
+    else                        _dbgHist[5]++;
+
     // ── 状態機械 ─────────────────────────────────────────
     switch (_state) {
 
     // ────────────────────────────────────────────────────────
-    //  IDLE 状態: リーダー間隔 (13500 µs) を待つ
+    //  IDLE 状態: パケット間の長い無信号期間 (> 16000 µs) を待つ
     // ────────────────────────────────────────────────────────
     case State::IDLE:
         if (interval >= IR_LEADER_INTV_MIN && interval <= IR_LEADER_INTV_MAX) {
-            // リーダー間隔を検出 → ビット受信開始
+            // 正規の NEC リーダー間隔 (13500 µs) を検出
+            // → 次の FALLING エッジから即座にビット受信開始
+            _dbgLeaderCount++;
             _state    = State::RECEIVING;
             _bitCount = 0u;
             _packet   = 0UL;
-            // ※ _ready は false のまま (前のパケットが未取得でも上書きしない)
-            //   → 前パケットが残っている場合は decode() で取り出してから次受信
+        } else if (interval > IR_LEADER_INTV_MAX) {
+            // パケット間の長い無信号期間 (AGC によりリーダーが検出不能な場合もこちらに入る)
+            // 現在の FALLING エッジ = リーダーマーク開始 or ビット 0 開始
+            // → 最初のビット間隔が来るまで LEADER_DETECTED で待機
+            _dbgLeaderCount++;
+            _state    = State::LEADER_DETECTED;
+            _bitCount = 0u;
+            _packet   = 0UL;
         }
-        // リーダー以外の間隔 (ノイズ等) は無視してアイドルに留まる
+        // リーダー・ギャップ以外の間隔 (ノイズ・ビット・中間) は無視
+        break;
+
+    // ────────────────────────────────────────────────────────
+    //  LEADER_DETECTED 状態: 最初のデータビットを待つ
+    //
+    //  パターン:
+    //    [bit]  700-3000 µs → ビット 0 としてデコードし、RECEIVING へ
+    //    [mid]  3000-16000 µs → まだリーダー/遷移域、LEADER_DETECTED で待機続行
+    //    [gap]  > 16000 µs → 新たなパケット開始、バッファリセット
+    //    [noise] < 700 µs → ノイズ、IDLE に戻る
+    // ────────────────────────────────────────────────────────
+    case State::LEADER_DETECTED:
+        if (interval >= IR_BIT_INTV_MIN && interval <= IR_BIT_INTV_MAX) {
+            // 最初のデータビット間隔を検出 → ビット 0 としてデコード開始
+            // 現在の FALLING エッジはビット 1 のマーク開始なので、
+            // この間隔値は「ビット 0 のマーク + スペース」を表す。
+            const uint8_t bit0 = (interval >= IR_BIT_THRESHOLD) ? 1u : 0u;
+            _packet   = (uint32_t)bit0;  // LSB 位置にビット 0 を格納
+            _bitCount = 1u;              // ビット 0 受信済みとして開始
+            _state    = State::RECEIVING;
+        } else if (interval > IR_BIT_INTV_MAX) {
+            // まだリーダー/中間/ギャップ帯域 → 待機続行
+            if (interval > IR_LEADER_INTV_MAX) {
+                // 新たなギャップ → バッファをリセットして再待機
+                _bitCount = 0u;
+                _packet   = 0UL;
+            }
+            // LEADER_DETECTED のまま待機
+        } else {
+            // interval < IR_BIT_INTV_MIN → ノイズ → IDLE に戻る
+            _dbgErrorCount++;
+            _dbgLastBadInterval = interval;
+            _state    = State::IDLE;
+            _bitCount = 0u;
+            _packet   = 0UL;
+        }
         break;
 
     // ────────────────────────────────────────────────────────
@@ -123,6 +186,8 @@ void Rx::onEdge() {
         } else {
             // ビット間隔が範囲外 → 通信エラーまたはノイズ
             // 状態機械をリセットしてアイドルに戻る
+            _dbgErrorCount++;             // エラーカウンタ
+            _dbgLastBadInterval = interval;  // 異常な間隔を記録
             _state    = State::IDLE;
             _bitCount = 0u;
             _packet   = 0UL;

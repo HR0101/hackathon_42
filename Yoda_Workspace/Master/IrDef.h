@@ -90,8 +90,9 @@ constexpr uint16_t IR_BIT_INTV_MIN   =  700;
 /** ビット '0'/'1' 判定しきい値 [µs]
  *  1124µs (bit0) と 2249µs (bit1) の中間付近 */
 constexpr uint16_t IR_BIT_THRESHOLD  = 1600;
-/** ビット間隔 有効上限 [µs] */
-constexpr uint16_t IR_BIT_INTV_MAX   = 3000;
+/** ビット間隔 有効上限 [µs]
+ *  理論値 bit'1' = 2249µs。OSRB38C9AAの AGC による延伸を考慮して 3500µs まで許容。 */
+constexpr uint16_t IR_BIT_INTV_MAX   = 3500;
 
 // ============================================================
 //  宛先アドレス定義

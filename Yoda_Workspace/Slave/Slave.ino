@@ -78,6 +78,10 @@ static uint8_t  g_bpm     = 120;
 /** 再生中フラグ (PLAY で true / STOP で false) */
 static bool     g_playing = false;
 
+// デバッグダンプ用変数（使用時はコメントを外す）
+// static uint32_t g_lastDebugMs = 0;
+// constexpr uint32_t DEBUG_INTERVAL_MS = 2000;
+
 // ============================================================
 //  前方宣言
 // ============================================================
@@ -151,6 +155,40 @@ void loop() {
     // ── 5. 未実装モジュールの更新（実装後にコメントを外す） ───
     // player.update();
     // ledCtrl.update();
+
+    // ── 6. 赤外線受信状況の定期ダンプ（デバッグ時はコメントを外す） ──
+    // const uint32_t now = millis();
+    // if (now - g_lastDebugMs >= DEBUG_INTERVAL_MS) {
+    //     g_lastDebugMs = now;
+    //     Rx &rx = Rx::getInstance();
+    //     uint32_t hist[Rx::HIST_BUCKETS];
+    //     rx.getHistogram(hist);
+    //     Serial.println(F("-------- IR RX STATUS --------"));
+    //     Serial.print(F("  FALLING edges   : ")); Serial.println(rx.getEdgeCount());
+    //     Serial.print(F("  Leader detected : ")); Serial.println(rx.getLeaderCount());
+    //     Serial.print(F("  Bit errors      : ")); Serial.println(rx.getErrorCount());
+    //     Serial.print(F("  Last interval   : ")); Serial.print(rx.getLastInterval()); Serial.println(F(" us"));
+    //     Serial.print(F("  Max  interval   : ")); Serial.print(rx.getMaxInterval());  Serial.println(F(" us"));
+    //     if (rx.getErrorCount() > 0) {
+    //         Serial.print(F("  Last bad intv   : ")); Serial.print(rx.getLastBadInterval()); Serial.println(F(" us"));
+    //     }
+    //     Serial.print(F("  State           : "));
+    //     if (rx.isReceiving()) {
+    //         Serial.print(F("RECEIVING (bit ")); Serial.print(rx.getBitProgress()); Serial.println(F("/24)"));
+    //     } else if (rx.isLeaderDetected()) {
+    //         Serial.println(F("LEADER_DETECTED"));
+    //     } else {
+    //         Serial.println(F("IDLE"));
+    //     }
+    //     Serial.println(F("-- Interval histogram ---------"));
+    //     Serial.print(F("  [noise] <700us     : ")); Serial.println(hist[0]);
+    //     Serial.print(F("  [bit0]  700-1600us : ")); Serial.println(hist[1]);
+    //     Serial.print(F("  [bit1]  1600-3000us: ")); Serial.println(hist[2]);
+    //     Serial.print(F("  [mid]   3000-11000 : ")); Serial.println(hist[3]);
+    //     Serial.print(F("  [leader]11000-16000: ")); Serial.println(hist[4]);
+    //     Serial.print(F("  [gap]   >16000us   : ")); Serial.println(hist[5]);
+    //     Serial.println(F("------------------------------"));
+    // }
 }
 
 // ============================================================
@@ -164,10 +202,10 @@ void loop() {
  * @param data コマンドに付随するデータ
  */
 static void handlePacket(uint8_t dest, uint8_t cmd, uint8_t data) {
-    // 受信内容をシリアルモニタへ出力（デバッグ用）
-    Serial.print(F("[RX] dest=0x")); Serial.print(dest, HEX);
-    Serial.print(F(" cmd=0x"));     Serial.print(cmd, HEX);
-    Serial.print(F(" data="));      Serial.println(data);
+    // 低レベルな生パケットログ（デバッグ時はコメントを外す）
+    // Serial.print(F("[RX] dest=0x")); Serial.print(dest, HEX);
+    // Serial.print(F(" cmd=0x"));     Serial.print(cmd, HEX);
+    // Serial.print(F(" data="));      Serial.println(data);
 
     // コマンド値で分岐
     // IrCmd を uint8_t にキャストして switch の定数式として使う

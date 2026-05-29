@@ -99,6 +99,59 @@ public:
      */
     bool decode(uint32_t &outPacket);
 
+    // ============================================================
+    //  デバッグ用アクセサ (loop() から安全に読み出せる)
+    // ============================================================
+    /** FALLING エッジを検出した累計回数 */
+    uint32_t getEdgeCount()       const { return _dbgEdgeCount; }
+    /** リーダーパルス（9ms+4.5ms）を検出した累計回数 */
+    uint32_t getLeaderCount()     const { return _dbgLeaderCount; }
+    /** ビット間隔が範囲外でリセットした累計回数 */
+    uint32_t getErrorCount()      const { return _dbgErrorCount; }
+    /** 直近の FALLING エッジ間隔 [µs] */
+    uint32_t getLastInterval()    const { return _dbgLastInterval; }
+    /** 直近の異常なエッジ間隔 [µs] */
+    uint32_t getLastBadInterval() const { return _dbgLastBadInterval; }
+    /** 現在受信中のビット数 (0〜23) */
+    uint8_t  getBitProgress()     const { return _bitCount; }
+    /** 状態機械が RECEIVING 中かどうか */
+    bool     isReceiving()        const { return _state == State::RECEIVING; }
+    /** 状態機械が LEADER_DETECTED 中かどうか */
+    bool     isLeaderDetected()   const { return _state == State::LEADER_DETECTED; }
+    /** これまでに観測した最大インターバル [µs] */
+    uint32_t getMaxInterval()     const { return _dbgMaxInterval; }
+
+    /**
+     * @brief インターバルのヒストグラムを取得する
+     *
+     * @details バケット定義:
+     *   [0]  <   700 µs  … ノイズ帯域
+     *   [1]   700-1600 µs … ビット '0' 帯域  (1124 µs)
+     *   [2]  1600-3000 µs … ビット '1' 帯域  (2249 µs)
+     *   [3]  3000-11000 µs … 中間帯域 (AGC 分割の証拠になる)
+     *   [4] 11000-16000 µs … リーダー帯域    (13500 µs)
+     *   [5] > 16000 µs  … 超長間隔 (起動直後 / パケット間)
+     */
+    static constexpr uint8_t HIST_BUCKETS = 6;
+    void getHistogram(uint32_t out[HIST_BUCKETS]) const {
+        noInterrupts();
+        for (uint8_t i = 0; i < HIST_BUCKETS; i++) out[i] = _dbgHist[i];
+        interrupts();
+    }
+
+    /** デバッグカウンタをすべてリセットする */
+    void resetDebugCounters() {
+        noInterrupts();
+        _dbgEdgeCount       = 0;
+        _dbgLeaderCount     = 0;
+        _dbgErrorCount      = 0;
+        _dbgLastInterval    = 0;
+        _dbgLastBadInterval = 0;
+        _dbgMaxInterval     = 0;
+        for (uint8_t i = 0; i < HIST_BUCKETS; i++) _dbgHist[i] = 0;
+        interrupts();
+    }
+
 private:
     // シングルトンのため コンストラクタ/コピー/ムーブ を非公開に制限
     Rx()                         = default;
@@ -111,8 +164,9 @@ private:
 
     /** 受信状態 */
     enum class State : uint8_t {
-        IDLE,       ///< アイドル: リーダー間隔を待機中
-        RECEIVING,  ///< データ受信中: ビット間隔を収集中
+        IDLE,             ///< アイドル: パケット間の長い無信号期間を待機中
+        LEADER_DETECTED,  ///< リーダー開始を検知: 最初のデータビットを待機中
+        RECEIVING,        ///< データ受信中: ビット間隔を収集中
     };
 
     /** 現在の受信状態 */
@@ -129,4 +183,15 @@ private:
 
     /** 前回 FALLING エッジの micros() 値 (間隔計算用) */
     volatile uint32_t _prevTime = 0;
+
+    // ──────────────────────────────────────────────────
+    //  デバッグ用カウンタ (ISR から書き込み、loop() から読み出し)
+    // ──────────────────────────────────────────────────
+    volatile uint32_t _dbgEdgeCount       = 0;  ///< FALLING エッジ累計
+    volatile uint32_t _dbgLeaderCount     = 0;  ///< リーダー検出累計
+    volatile uint32_t _dbgErrorCount      = 0;  ///< ビット間隔エラー累計
+    volatile uint32_t _dbgLastInterval    = 0;  ///< 直近の間隔 [µs]
+    volatile uint32_t _dbgLastBadInterval = 0;  ///< 直近の異常間隔 [µs]
+    volatile uint32_t _dbgMaxInterval     = 0;  ///< 調査開始以来の最大間隔 [µs]
+    volatile uint32_t _dbgHist[HIST_BUCKETS] = {};  ///< インターバルヒストグラム
 };
