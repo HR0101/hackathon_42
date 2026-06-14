@@ -39,29 +39,39 @@ float [] startTime = {
 // Instrument インタフェースの実装 
 class HackInstrument implements Instrument
 {
- Oscil wave;
- Line ampEnv;
- float maxAmp;
+  Oscil wave;
+  ADSR adsr;
 
- HackInstrument ( float frequency , float maxAmp , Waveform wf ) 
- {
-   wave = new Oscil ( frequency , 0, wf ); 
-   this.maxAmp = maxAmp; 
-   ampEnv = new Line (); 
-   ampEnv.patch ( wave.amplitude ); 
- }
+  HackInstrument ( float frequency , float maxAmp , Waveform wf ) 
+  {
+    wave = new Oscil ( frequency , 1.0f, wf ); 
+    // ADSRのパラメータ設定 
+    float attackTime   = 0.1f; // アタック時間 (立ち上がり)
+    float decayTime    = 0.1f;  // ディケイ時間 (最大音量からサスティンへの減衰)
+    float sustainLevel = 0.95f;  // サスティンレベル (保持される音量の割合 0.0〜1.0)
+    float releaseTime  = 0.3f;  // リリース時間 (ノートオフ後の余韻)
+    
+    // ADSRインスタンスの作成 (最大音量, アタック, ディケイ, サスティン, リリース)
+    adsr = new ADSR( maxAmp, attackTime, decayTime, sustainLevel, releaseTime );
+    // オシレーターの出力をADSRに接続する
+    wave.patch( adsr );
+  }
 
- void noteOn ( float duration ) 
- {
-   ampEnv.activate ( duration , this.maxAmp , 0);
-   wave.patch ( out ); 
- }
- 
- void noteOff ()
- {
-   wave.unpatch ( out ); 
- }
+  //ADSRの出力をAudioOutputにパッチする
+  void noteOn ( float duration ) 
+  {
+    adsr.noteOn();
+    adsr.patch( out );
+  }
+  
+  // ADSRのリリースフェーズ（余韻）を開始
+  void noteOff ()
+  {
+    adsr.noteOff();
+    adsr.unpatchAfterRelease( out );
+  }
 }
+
 
 void setup () 
 {
@@ -70,10 +80,21 @@ void setup ()
   out = minim.getLineOut (); 
   out.setTempo ( 120 ); 
   
-  // 初期値として木琴の倍音構造を設定 
+  // 初期値としてトランペットの倍音構造を設定 
   currentWaveform = WavetableGenerator.gen10 ( 
-     4096, 
-     new float[] { 1.00f, 0.00f, 0.50f } 
+     4096 , 
+     new float[] { 
+     1.00f, 
+     1.00f, 
+     0.85f, 
+     0.85f, 
+     0.75f, 
+     0.75f, 
+     0.65f, 
+     0.55f, 
+     0.45f, 
+     0.30f 
+   } 
   );
 }
 
