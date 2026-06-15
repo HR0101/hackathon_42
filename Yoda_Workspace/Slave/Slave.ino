@@ -56,7 +56,7 @@
 
 // 以下は各モジュール実装後にコメントを外す
 // #include "Player.h"    // 音楽・メトロノーム再生
-// #include "LedCtrl.h"   // 演出 LED 制御
+#include "LedCtrl.h"   // 演出 LED 制御
 
 // ============================================================
 //  ★ 機体ごとに書き換える: このスレーブ機の ID ★
@@ -77,6 +77,9 @@ static uint8_t  g_bpm     = 120;
 
 /** 再生中フラグ (PLAY で true / STOP で false) */
 static bool     g_playing = false;
+
+/** 可視光 LED 制御オブジェクト */
+static LedCtrl  ledCtrl;
 
 // デバッグダンプ用変数（使用時はコメントを外す）
 // static uint32_t g_lastDebugMs = 0;
@@ -111,7 +114,7 @@ void setup() {
 
     // ── 3. 未実装モジュール初期化（実装後にコメントを外す） ───
     // player.begin();
-    // ledCtrl.begin();
+    ledCtrl.begin();
 
     Serial.println(F("受信待機中..."));
 }
@@ -154,7 +157,7 @@ void loop() {
 
     // ── 5. 未実装モジュールの更新（実装後にコメントを外す） ───
     // player.update();
-    // ledCtrl.update();
+    ledCtrl.update();
 
     // ── 6. 赤外線受信状況の定期ダンプ（デバッグ時はコメントを外す） ──
     // const uint32_t now = millis();
@@ -309,6 +312,8 @@ static void onBpm(uint8_t bpm) {
  */
 static void onSync(uint8_t beatCount) {
     Serial.print(F("[SYNC] beat=")); Serial.println(beatCount);
+
+    ledCtrl.flash();  // 受信タイミングで可視光 LED を点滅
 
     // 小節先頭（4拍ごと）の検出例
     if (beatCount % 4 == 0) {

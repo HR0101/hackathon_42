@@ -44,7 +44,7 @@
 
 // 以下は各モジュール実装後にコメントを外す
 // #include "Scheduler.h"  // BPM スケジューラ（拍タイミング生成）
-// #include "LedCtrl.h"    // 演出 LED 制御
+#include "LedCtrl.h"    // 演出 LED 制御
 
 // ============================================================
 //  定数
@@ -62,6 +62,9 @@ constexpr uint8_t  SERIAL_BUF_SIZE = 32;
 // ============================================================
 /** IR 送信オブジェクト */
 static Tx tx;
+
+/** 可視光 LED 制御オブジェクト */
+static LedCtrl ledCtrl;
 
 /** 現在の BPM 値 */
 static uint8_t  g_bpm        = BPM_DEFAULT;
@@ -108,7 +111,7 @@ void setup() {
 
     // ── 未実装モジュール初期化（実装後にコメントを外す）──────
     // scheduler.begin();
-    // ledCtrl.begin();
+    ledCtrl.begin();
 
     // ── 起動時に全スレーブへ初期 BPM を送信 ─────────────────
     // スレーブ側の setup() 完了を待ってから送信する
@@ -133,7 +136,7 @@ void loop() {
 
     // ── 3. 未実装モジュールの更新（実装後にコメントを外す）──
     // scheduler.update();
-    // ledCtrl.update();
+    ledCtrl.update();
 }
 
 // ============================================================
@@ -376,6 +379,7 @@ static void updateSyncTiming() {
 
         static uint8_t beatCount = 0;
         sendCommand(IR_DEST_ALL, IrCmd::SYNC, beatCount);
+        ledCtrl.flash();  // 送信タイミングで可視光 LED を点滅
         beatCount++;  // uint8_t のオーバーフローで 0 に自動リセット
     }
 }
