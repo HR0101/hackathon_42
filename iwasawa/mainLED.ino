@@ -16,29 +16,19 @@
  *  【setup() でやること】
  *    1. Serial.begin()          デバッグ用シリアル通信の開始
  *    2. Rx::getInstance().begin() IR 受信の初期化（FALLING 割り込み登録）
- *    3. 未実装モジュールの初期化呼び出し
+ *    3. LED出力ピンの初期化
  *
  *  【loop() でやること】
  *    1. Rx::getInstance().decode()  受信パケットが揃ったか確認
  *    2. Packet::parse()             パケットを分解して XOR 整合性を検査
  *    3. 宛先フィルタリング          自機宛またはブロードキャストのみ処理
  *    4. handlePacket()              コマンドを種類ごとのハンドラに振り分ける
- *
- *  【パケット受信の流れ】
- *
- *    [割り込み層: onEdge()]
- *      FALLING エッジ発生 → micros() でエッジ間隔を計測
- *      → 状態機械でリーダー検出 / ビット判定 / パケット組み立て
- *      → 24bit 揃ったら _ready フラグを立てる
- *
- *    [アプリ層: loop()]
- *      decode()         → _ready を確認してアトミックにパケット取り出し
- *      Packet::parse()  → フィールド抽出 + XOR 整合性チェック
- *      handlePacket()   → PLAY/STOP/BPM/SYNC に応じた処理を実行
+ *    5. updateLed()                 LEDの消灯タイミングを管理
  *
  * =====================================================================
  *  【ピン配置】
  *   D2 : IR 受信 (OSRB38C9AA, Rx クラスが管理)
+ *   D7 : LED 出力
  * =====================================================================
  */
 
@@ -49,7 +39,6 @@
 // #include "../Shared/Packet.h"  // パケット生成・解析
 #include "IrDef.h"
 #include "Packet.h"
-
 
 #include "Rx.h"      // IR 受信クラス（シングルトン）
 #include "Config.h"  // プロジェクト固有設定（現在は空ファイル）
@@ -72,11 +61,32 @@ constexpr uint8_t MY_SLAVE_ID = IR_DEST_SLAVE1;  // ← ここを 1〜5 で変�
 // ============================================================
 //  グローバル変数（アプリケーション状態）
 // ============================================================
+
 /** 受信した最新の BPM 値 */
 static uint8_t  g_bpm     = 120;
 
 /** 再生中フラグ (PLAY で true / STOP で false) */
 static bool     g_playing = false;
+
+// ============================================================
+//  LED制御用
+// ============================================================
+
+/** LEDを接続するピン */
+constexpr uint8_t LED_PIN = 7;
+
+/** SYNCを受けたときにLEDを点灯させる時間[ms] */
+constexpr uint16_t LED_ON_MS = 80;
+
+/** LEDが現在点灯しているか */
+static bool g_ledOn = false;
+
+/** LEDを消灯させる時刻[ms] */
+static uint32_t g_ledOffMs = 0;
+
+// デバッグダンプ用変数（使用時はコメントを外す）
+// static uint32_t g_lastDebugMs = 0;
+// constexpr uint32_t DEBUG_INTERVAL_MS = 2000;
 
 // ============================================================
 //  前方宣言
@@ -87,6 +97,11 @@ static void onStop();
 static void onBpm(uint8_t bpm);
 static void onSync(uint8_t beatCount);
 
+// LED制御用
+static void flashLed();
+static void updateLed();
+static void stopLed();
+
 // ============================================================
 //  setup()
 // ============================================================
@@ -94,6 +109,10 @@ void setup() {
     // ── 1. シリアル初期化（デバッグ用） ──────────────────────
     Serial.begin(115200);
     while (!Serial && millis() < 3000) {}
+
+    // ── LED初期化 ────────────────────────────────────────
+    pinMode(LED_PIN, OUTPUT);
+    digitalWrite(LED_PIN, LOW);
 
     Serial.print(F("========================================\n"));
     Serial.print(F(" 赤外線同期輪唱システム --- Slave 起動\n"));
@@ -148,7 +167,11 @@ void loop() {
         }
     }
 
-    // ── 5. 未実装モジュールの更新（実装後にコメントを外す） ───
+    // ── 5. LED制御の更新 ───────────────────────────────────
+    // delay() を使わず，LEDを消すタイミングだけを管理する
+    updateLed();
+
+    // ── 6. 未実装モジュールの更新（実装後にコメントを外す） ───
     // player.update();
     // ledCtrl.update();
 }
@@ -216,6 +239,8 @@ static void onPlay() {
     g_playing = true;
     Serial.print(F("[PLAY] 再生開始 BPM=")); Serial.println(g_bpm);
 
+    Serial.println(F("[LED] SYNC同期点滅開始"));
+
     // TODO: player.play(g_bpm);
     // TODO: ledCtrl.startEffect();
 }
@@ -228,6 +253,9 @@ static void onStop() {
 
     g_playing = false;
     Serial.println(F("[STOP] 再生停止"));
+
+    // LEDを停止して消灯する
+    stopLed();
 
     // TODO: player.stop();
     // TODO: ledCtrl.stopEffect();
@@ -243,8 +271,21 @@ static void onStop() {
  *   再生前に受信した場合は次回 PLAY 時のテンポとして保持する。
  */
 static void onBpm(uint8_t bpm) {
+    // 異常な値が来たときの保険
+    if (bpm < 40) {
+        bpm = 40;
+    }
+    if (bpm > 240) {
+        bpm = 240;
+    }
+
     g_bpm = bpm;
-    Serial.print(F("[BPM] ")); Serial.println(bpm);
+    Serial.print(F("[BPM] ")); Serial.println(g_bpm);
+
+    // 1拍の長さも確認用に表示する
+    Serial.print(F("  1拍 = "));
+    Serial.print(60000UL / g_bpm);
+    Serial.println(F(" ms"));
 
     // TODO: player.setBpm(bpm);
     // TODO: scheduler.setBpm(bpm);  // 拍タイミング更新
@@ -277,6 +318,59 @@ static void onSync(uint8_t beatCount) {
         Serial.println(F("  => 小節先頭"));
     }
 
+    // 再生中ならSYNCに合わせてLEDを光らせる
+    if (g_playing) {
+        flashLed();
+    }
+
     // TODO: player.sync(beatCount);
     //       内部でドリフト量を計測し、必要なら再生速度を微調整する
+}
+
+// ============================================================
+//  LED制御関数
+// ============================================================
+
+/**
+ * @brief LEDを1回点灯させる
+ *
+ * @details
+ *   SYNCコマンドを受信した瞬間に呼び出す。
+ *   LED_ON_MSだけ点灯し，消灯はupdateLed()で行う。
+ */
+static void flashLed() {
+    uint32_t now = millis();
+
+    digitalWrite(LED_PIN, HIGH);
+    g_ledOn = true;
+
+    // LED_ON_MS後に消灯する
+    g_ledOffMs = now + LED_ON_MS;
+}
+
+/**
+ * @brief loop()内で常に呼び出すLED更新処理
+ *
+ * @details
+ *   delay()を使わず，LEDの消灯タイミングだけを管理する。
+ */
+static void updateLed() {
+    uint32_t now = millis();
+
+    if (g_ledOn && (long)(now - g_ledOffMs) >= 0) {
+        digitalWrite(LED_PIN, LOW);
+        g_ledOn = false;
+    }
+}
+
+/**
+ * @brief STOP時にLEDを消灯する
+ */
+static void stopLed() {
+    digitalWrite(LED_PIN, LOW);
+
+    g_ledOn = false;
+    g_ledOffMs = 0;
+
+    Serial.println(F("[LED] 点滅停止"));
 }

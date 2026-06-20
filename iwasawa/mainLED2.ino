@@ -16,7 +16,7 @@
  *  【setup() でやること】
  *    1. Serial.begin()          デバッグ用シリアル通信の開始
  *    2. Rx::getInstance().begin() IR 受信の初期化（FALLING 割り込み登録）
- *    3. 未実装モジュールの初期化呼び出し
+ *    3. LED制御・音出力ピンの初期化
  *
  *  【loop() でやること】
  *    1. Rx::getInstance().decode()  受信パケットが揃ったか確認
@@ -24,21 +24,10 @@
  *    3. 宛先フィルタリング          自機宛またはブロードキャストのみ処理
  *    4. handlePacket()              コマンドを種類ごとのハンドラに振り分ける
  *
- *  【パケット受信の流れ】
- *
- *    [割り込み層: onEdge()]
- *      FALLING エッジ発生 → micros() でエッジ間隔を計測
- *      → 状態機械でリーダー検出 / ビット判定 / パケット組み立て
- *      → 24bit 揃ったら _ready フラグを立てる
- *
- *    [アプリ層: loop()]
- *      decode()         → _ready を確認してアトミックにパケット取り出し
- *      Packet::parse()  → フィールド抽出 + XOR 整合性チェック
- *      handlePacket()   → PLAY/STOP/BPM/SYNC に応じた処理を実行
- *
  * =====================================================================
  *  【ピン配置】
  *   D2 : IR 受信 (OSRB38C9AA, Rx クラスが管理)
+ *   D8 : ブザー／スピーカー出力
  * =====================================================================
  */
 
@@ -50,7 +39,6 @@
 #include "IrDef.h"
 #include "Packet.h"
 
-
 #include "Rx.h"      // IR 受信クラス（シングルトン）
 #include "Config.h"  // プロジェクト固有設定（現在は空ファイル）
 
@@ -61,17 +49,12 @@
 // ============================================================
 //  ★ 機体ごとに書き換える: このスレーブ機の ID ★
 // ============================================================
-/**
- * @brief このスレーブ機のアドレス
- *
- * マスタから宛先 = この値 または IR_DEST_ALL(0x0) のパケットだけ処理する。
- * 5 台それぞれに異なる値を設定してください。
- */
 constexpr uint8_t MY_SLAVE_ID = IR_DEST_SLAVE1;  // ← ここを 1〜5 で変更
 
 // ============================================================
 //  グローバル変数（アプリケーション状態）
 // ============================================================
+
 /** 受信した最新の BPM 値 */
 static uint8_t  g_bpm     = 120;
 
@@ -80,6 +63,27 @@ static bool     g_playing = false;
 
 /** 可視光 LED 制御オブジェクト */
 static LedCtrl  ledCtrl;
+
+// ============================================================
+//  遅延測定・音出力用
+// ============================================================
+
+/** ブザーまたはスピーカーを接続するピン */
+constexpr uint8_t SPEAKER_PIN = 8;
+
+/** パケット受信完了時刻[us] */
+static uint32_t g_packetReadyUs = 0;
+
+/** パケット解析完了時刻[us] */
+static uint32_t g_parseDoneUs = 0;
+
+/** 遅延測定回数 */
+static uint32_t g_delayCount = 0;
+
+/** 平均計算用 */
+static float g_sumParseDelayUs  = 0;
+static float g_sumOutputDelayUs = 0;
+static float g_sumTotalDelayUs  = 0;
 
 // デバッグダンプ用変数（使用時はコメントを外す）
 // static uint32_t g_lastDebugMs = 0;
@@ -93,6 +97,9 @@ static void onPlay();
 static void onStop();
 static void onBpm(uint8_t bpm);
 static void onSync(uint8_t beatCount);
+
+// 遅延測定用
+static void printDelayLog(uint32_t soundStartUs);
 
 // ============================================================
 //  setup()
@@ -108,13 +115,13 @@ void setup() {
     Serial.println(F("========================================"));
 
     // ── 2. IR 受信モジュール初期化 ────────────────────────────
-    // D2 ピンを INPUT に設定し、FALLING エッジ割り込みを登録する。
-    // これ以降、IR 信号が来るたびに onEdge() が自動で呼ばれる。
     Rx::getInstance().begin();
 
-    // ── 3. 未実装モジュール初期化（実装後にコメントを外す） ───
-    // player.begin();
+    // ── 3. LED制御・音出力ピン初期化 ────────────────────────
     ledCtrl.begin();
+
+    pinMode(SPEAKER_PIN, OUTPUT);
+    noTone(SPEAKER_PIN);
 
     Serial.println(F("受信待機中..."));
 }
@@ -124,32 +131,26 @@ void setup() {
 // ============================================================
 void loop() {
     // ── 1. 受信パケットの取り出し ──────────────────────────────
-    // decode() は 24bit が揃ったときだけ true を返す。
-    // 揃っていなければ即座に false を返すので loop() をブロックしない。
     uint32_t rawPacket;
     if (Rx::getInstance().decode(rawPacket)) {
 
+        // パケット受信完了時刻を記録
+        g_packetReadyUs = micros();
+
         // ── 2. パケットの解析 & XOR 整合性チェック ────────────
-        // Packet::parse() は以下を行う:
-        //   a) 24bit からフィールド（dest/cmd/data）を抽出
-        //   b) XOR チェックバイトを再計算して受信値と照合
-        //   c) 一致すれば true / ビット化けなら false を返す
         uint8_t dest, cmd, data;
         if (Packet::parse(rawPacket, dest, cmd, data)) {
 
+            // パケット解析完了時刻を記録
+            g_parseDoneUs = micros();
+
             // ── 3. 宛先フィルタリング ──────────────────────────
-            // 条件: dest == IR_DEST_ALL (ブロードキャスト)
-            //    OR dest == MY_SLAVE_ID (自機宛の個別指定)
-            // それ以外は他機宛なので無視する
             if (dest == IR_DEST_ALL || dest == MY_SLAVE_ID) {
                 // ── 4. コマンドの振り分け ──────────────────────
                 handlePacket(dest, cmd, data);
             }
-            // else: 他機宛 → 何もしない（無視）
 
         } else {
-            // XOR チェック不一致 → 通信エラー（ノイズ・ビット化け）
-            // パケット全体を破棄して次の受信を待つ
             Serial.print(F("[ERR] XOR 不一致 raw=0x"));
             Serial.println(rawPacket, HEX);
         }
@@ -197,21 +198,7 @@ void loop() {
 // ============================================================
 //  handlePacket() ── コマンドの種類ごとに処理を振り分ける
 // ============================================================
-/**
- * @brief 受信・検証済みパケットのコマンドを対応ハンドラへ振り分ける
- *
- * @param dest パケットの宛先（ログ出力用）
- * @param cmd  コマンド値 (IrCmd::PLAY 等を uint8_t でキャストした値)
- * @param data コマンドに付随するデータ
- */
 static void handlePacket(uint8_t dest, uint8_t cmd, uint8_t data) {
-    // 低レベルな生パケットログ（デバッグ時はコメントを外す）
-    // Serial.print(F("[RX] dest=0x")); Serial.print(dest, HEX);
-    // Serial.print(F(" cmd=0x"));     Serial.print(cmd, HEX);
-    // Serial.print(F(" data="));      Serial.println(data);
-
-    // コマンド値で分岐
-    // IrCmd を uint8_t にキャストして switch の定数式として使う
     switch (cmd) {
 
     case static_cast<uint8_t>(IrCmd::PLAY):
@@ -231,7 +218,6 @@ static void handlePacket(uint8_t dest, uint8_t cmd, uint8_t data) {
         break;
 
     default:
-        // 定義外のコマンド値は警告を出して無視
         Serial.print(F("[WARN] 未知の cmd=0x"));
         Serial.println(cmd, HEX);
         break;
@@ -240,22 +226,33 @@ static void handlePacket(uint8_t dest, uint8_t cmd, uint8_t data) {
 
 // ============================================================
 //  コマンドハンドラ群
-//  ── Player / LedCtrl の実装後に TODO 行を肉付けする ──
 // ============================================================
 
 /**
  * @brief PLAY コマンドを受けたときの処理
- *
- * @details
- *   この関数が呼ばれるときには既に BPM コマンドを受信済みのはず
- *   （マスタが PLAY の直前に BPM を送る設計のため）。
- *   g_bpm を使って演奏を開始する。
  */
 static void onPlay() {
-    if (g_playing) return;  // 既に再生中なら二重起動を防ぐ
+    // 2回目以降のPLAYでも測定できるように return しない
+    bool wasPlaying = g_playing;
 
     g_playing = true;
-    Serial.print(F("[PLAY] 再生開始 BPM=")); Serial.println(g_bpm);
+
+    if (wasPlaying) {
+        Serial.println(F("[PLAY] 再生中にPLAYを再受信"));
+    } else {
+        Serial.print(F("[PLAY] 再生開始 BPM="));
+        Serial.println(g_bpm);
+    }
+
+    // 音出力開始時刻を記録
+    uint32_t soundStartUs = micros();
+
+    // 音を出力する
+    // 例：かえるの合唱の最初の音として C5 付近を鳴らす
+    tone(SPEAKER_PIN, 523);
+
+    // 遅延測定結果を表示
+    printDelayLog(soundStartUs);
 
     // TODO: player.play(g_bpm);
     // TODO: ledCtrl.startEffect();
@@ -265,10 +262,13 @@ static void onPlay() {
  * @brief STOP コマンドを受けたときの処理
  */
 static void onStop() {
-    if (!g_playing) return;  // 既に停止中なら何もしない
+    if (!g_playing) return;
 
     g_playing = false;
     Serial.println(F("[STOP] 再生停止"));
+
+    // 音を停止
+    noTone(SPEAKER_PIN);
 
     // TODO: player.stop();
     // TODO: ledCtrl.stopEffect();
@@ -276,50 +276,82 @@ static void onStop() {
 
 /**
  * @brief BPM コマンドを受けたときの処理
- *
- * @param bpm 新しい BPM 値 (40〜240)
- *
- * @details
- *   再生中に受信した場合はテンポを即座に変更する。
- *   再生前に受信した場合は次回 PLAY 時のテンポとして保持する。
  */
 static void onBpm(uint8_t bpm) {
     g_bpm = bpm;
-    Serial.print(F("[BPM] ")); Serial.println(bpm);
+    Serial.print(F("[BPM] "));
+    Serial.println(g_bpm);
 
     // TODO: player.setBpm(bpm);
-    // TODO: scheduler.setBpm(bpm);  // 拍タイミング更新
+    // TODO: scheduler.setBpm(bpm);
 }
 
 /**
  * @brief SYNC コマンドを受けたときの処理
- *
- * @param beatCount マスタの拍カウンタ (0〜255 の繰り返し)
- *
- * @details
- *   マスタが 1 拍ごとに送ってくるタイミング信号。
- *   演奏のズレをここで補正する。
- *
- *   【beatCount の活用例】
- *     beatCount % 4 == 0  → 4/4 拍子の小節先頭 → 位相リセット
- *     beatCount % 2 == 0  → 2 拍ごと → ダウンビート処理
- *     beatCount == 0      → 最初の拍 → フルリセット
- *
- *   【輪唱への応用】
- *     各スレーブに「何拍ずらして再生するか」のオフセットを持たせる。
- *     例: スレーブ N 号機は (N-1) × 4 拍遅らせて PLAY する設計にすれば
- *     自動的に輪唱になる。
  */
 static void onSync(uint8_t beatCount) {
-    Serial.print(F("[SYNC] beat=")); Serial.println(beatCount);
+    Serial.print(F("[SYNC] beat="));
+    Serial.println(beatCount);
 
     ledCtrl.flash();  // 受信タイミングで可視光 LED を点滅
 
-    // 小節先頭（4拍ごと）の検出例
     if (beatCount % 4 == 0) {
         Serial.println(F("  => 小節先頭"));
     }
 
     // TODO: player.sync(beatCount);
-    //       内部でドリフト量を計測し、必要なら再生速度を微調整する
+}
+
+// ============================================================
+//  遅延測定ログ出力
+// ============================================================
+
+static void printDelayLog(uint32_t soundStartUs) {
+    uint32_t parseDelayUs  = g_parseDoneUs - g_packetReadyUs;
+    uint32_t outputDelayUs = soundStartUs - g_parseDoneUs;
+    uint32_t totalDelayUs  = soundStartUs - g_packetReadyUs;
+
+    // 測定回数を更新
+    g_delayCount++;
+
+    // 平均計算用に加算
+    g_sumParseDelayUs  += parseDelayUs;
+    g_sumOutputDelayUs += outputDelayUs;
+    g_sumTotalDelayUs  += totalDelayUs;
+
+    Serial.println(F("----- 遅延測定結果 -----"));
+
+    Serial.print(F("測定回数: "));
+    Serial.println(g_delayCount);
+
+    Serial.print(F("受信完了 -> 解析完了: "));
+    Serial.print(parseDelayUs);
+    Serial.println(F(" us"));
+
+    Serial.print(F("解析完了 -> 音出力開始: "));
+    Serial.print(outputDelayUs);
+    Serial.println(F(" us"));
+
+    Serial.print(F("受信完了 -> 音出力開始: "));
+    Serial.print(totalDelayUs);
+    Serial.println(F(" us"));
+
+    // 2回目以降は平均も表示
+    if (g_delayCount >= 2) {
+        Serial.println(F("----- 平均遅延 -----"));
+
+        Serial.print(F("平均 受信完了 -> 解析完了: "));
+        Serial.print(g_sumParseDelayUs / g_delayCount);
+        Serial.println(F(" us"));
+
+        Serial.print(F("平均 解析完了 -> 音出力開始: "));
+        Serial.print(g_sumOutputDelayUs / g_delayCount);
+        Serial.println(F(" us"));
+
+        Serial.print(F("平均 受信完了 -> 音出力開始: "));
+        Serial.print(g_sumTotalDelayUs / g_delayCount);
+        Serial.println(F(" us"));
+    }
+
+    Serial.println(F("------------------------"));
 }
