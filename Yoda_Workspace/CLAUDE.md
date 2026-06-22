@@ -34,7 +34,7 @@ Serial monitor baud rate: **115200**.
 Yoda_Workspace/
 ├── Master/     — Master sketch (IR transmitter, controls all slaves)
 ├── Slave/      — Slave sketch (IR receiver, plays music)
-│   └── Song.h  — all song / timbre / per-unit round config (edit this)
+│   └── Song.h  — melody + instrument timbres + unit→instrument map (edit this)
 └── Shared/     — Canonical source for IrDef.h and Packet.h/cpp
 ```
 
@@ -66,7 +66,9 @@ CHECK     = upperByte XOR DATA
 
 ### Master flow
 
-`Tx` class uses RA4M1's GPT timer (via `FspTimer`) toggled at 76 kHz to produce a 38 kHz carrier on **D9**. `sendFrame()` is blocking (~68 ms worst case). `updateSyncTiming()` in `loop()` accumulates `g_lastSyncMs += beatMs` (not `= millis()`) to prevent drift.
+`Tx` class uses RA4M1's GPT timer (via `FspTimer`) toggled at 76 kHz to produce a 38 kHz carrier on **D9**. `sendFrame()` is blocking (~68 ms worst case). `updateSyncTiming()` in `loop()` accumulates `g_lastSyncMs += beatMs` (not `= millis()`) to prevent drift, and increments a per-beat counter `g_beat`.
+
+**Round timing is managed entirely by the Master.** On `play`, instead of broadcasting one PLAY to everyone, the Master sends an *individual* PLAY to each slave when `g_beat` reaches that slave's start beat (`dispatchRoundStarts()`). The schedule lives in `ROUND_START_BEAT[]` / `ROUND_SLAVE_DEST[]` in `Master.ino` — edit there to change who enters when. SYNC is still broadcast every beat (data = `g_beat & 0xFF`) for slave drift correction.
 
 Serial commands: `play`, `stop`, `bpm <val>`, `bpm+`, `bpm-`, `sync`, `status`, `help`.
 
@@ -78,15 +80,19 @@ Serial commands: `play`, `stop`, `bpm <val>`, `bpm+`, `bpm-`, `sync`, `status`, 
 
 The Slave plays music entirely on-device (no PC/external source):
 
-- **Additive synthesis**: at startup `Player` builds a one-cycle wavetable from each instrument's harmonic array, then drives a phase accumulator to sound any pitch (no waveform-loop discontinuity).
-- **ADSR**: computed per-sample inside an `FspTimer` sampling ISR at `AUDIO_SAMPLE_RATE` (16 kHz).
+- **Two roles** (per unit, chosen by `MY_SLAVE_ID` via `VOICES[]`): **melody** units play `SONG[]` (the round); **rhythm** units play a drum pattern. The intended layout is 3 melody + 2 rhythm (kick + snare).
+- **Additive synthesis + noise**: at startup `Player` builds a one-cycle wavetable from the instrument's harmonic array, then drives a phase accumulator. Each instrument has a `noiseMix` (0=pure tone, 1=pure noise) blending the wavetable with an xorshift white-noise source per sample. Drum timbres are ported from `ISHIMARU/`: **kick** = 55 Hz + 110 Hz (HARM_KICK, `baseFreq`=55), **snare** = 0.7 noise + 0.3 × 180 Hz body tone.
+- **ADSR**: computed per-sample inside an `FspTimer` sampling ISR at `AUDIO_SAMPLE_RATE` (16 kHz). Drums use sustain=0 (one-shot, no noteOff).
 - **Output**: A0 (12-bit DAC) → coupling cap → TA7368 amp → 8 Ω speaker.
-- **Round (輪唱)**: after `play()`, each unit waits its per-voice offset, plays the melody, and loops every `SONG_LEN_BEATS` (32). `sync()` corrects phase drift (subtracting estimated IR latency to avoid false correction).
+- **Free-running tempo**: each slave runs its own internal millis-based beat clock. On PLAY it starts from the top *immediately* (no self-delay — round timing is the Master's job) and loops every `SONG_LEN_BEATS` (32). `sync()` corrects phase drift against the Master's SYNC (subtracting estimated IR latency), keeping all slaves on the same beat grid. Rhythm units start at beat 0; melody units are staggered by the Master.
 
-**All song/timbre/round data lives in `Slave/Song.h`** — the single file to edit:
+**Song/timbre data lives in `Slave/Song.h`** — the file to edit for the music:
 1. `SONG[]` — melody (note, start beat, duration).
-2. `INSTRUMENTS[]` — per-instrument harmonics + ADSR (Piano / Trumpet / Mokkin×2, ported from `055/`).
-3. `VOICES[]` — maps unit number → round offset (beats) + instrument. `Slave.ino`'s `MY_SLAVE_ID` (1–5) selects the row via `player.setVoice()`.
+2. `INSTRUMENTS[]` — harmonics/noise + ADSR (Piano / Trumpet / Mokkin×2 / Kick / Snare).
+3. `KICK_PATTERN[]` / `SNARE_PATTERN[]` — drum hit beats within one 32-beat loop.
+4. `VOICES[]` — maps unit number → role (melody/rhythm) + instrument (+ pattern). `MY_SLAVE_ID` (1–5) selects it via `player.setVoice()`.
+
+Round *timing* is NOT here — it is on the Master (`ROUND_START_BEAT[]`).
 
 ### Stub modules (not yet implemented)
 

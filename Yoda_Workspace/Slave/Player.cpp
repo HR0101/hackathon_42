@@ -17,6 +17,11 @@ namespace {
     volatile float phase    = 0.0f;
     volatile float phaseInc = 0.0f;
 
+    /** ノイズ混合比（0.0=トーンのみ / 1.0=ノイズのみ）。スネアは 0.7 等。*/
+    volatile float noiseMix = 0.0f;
+    /** ノイズ生成用の乱数状態（xorshift32）*/
+    volatile uint32_t rng = 0x12345678UL;
+
     // ── ADSR 包絡線 ──
     enum AdsrState : uint8_t { A_IDLE, A_ATTACK, A_DECAY, A_SUSTAIN, A_RELEASE };
     volatile AdsrState adsr       = A_IDLE;
@@ -64,14 +69,28 @@ namespace {
             break;
         }
 
-        // ── 2. ウェーブテーブルを位相に従って読み出す ──
+        // ── 2. 音源を読み出す（ウェーブテーブルとノイズを noiseMix で混合）──
         uint16_t out;
         if (adsr != A_IDLE) {
+            // トーン成分（倍音合成ウェーブテーブル）
             const uint16_t idx = (uint16_t)phase;
-            const float s = wt[idx] * env;            // -0.5〜+0.5
+            const float tone = wt[idx];
             phase += phaseInc;
             if (phase >= (float)WT_SIZE) phase -= (float)WT_SIZE;
-            float v = (s + 1.0f) * 2047.5f;           // 0〜4095 に変換
+
+            // ノイズ成分（xorshift32 ホワイトノイズ）
+            float sample;
+            if (noiseMix > 0.0f) {
+                uint32_t x = rng;
+                x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+                rng = x;
+                const float noise = ((float)(x & 0xFFFFUL) / 32768.0f) - 1.0f;  // -1〜+1
+                sample = noiseMix * noise + (1.0f - noiseMix) * tone;
+            } else {
+                sample = tone;
+            }
+
+            float v = (sample * env + 1.0f) * 2047.5f;  // 0〜4095 に変換
             if (v < 0.0f)    v = 0.0f;
             if (v > 4095.0f) v = 4095.0f;
             out = (uint16_t)v;
@@ -112,19 +131,21 @@ void Player::begin() {
 }
 
 // ============================================================
-//  setVoice() ── 機体番号から楽器と輪唱オフセットを選択
+//  setVoice() ── 機体番号から役割・楽器・リズムパターンを選択
+//               （輪唱の入りタイミングは Master 管理）
 // ============================================================
 void Player::setVoice(uint8_t slaveId) {
     const VoiceConfig& v = voiceForSlave(slaveId);
-    _offsetBeats = v.roundOffsetBeats;
-    _instId      = v.instrument;
+    _role       = v.role;
+    _instId     = v.instrument;
+    _pattern    = v.pattern;
+    _patternLen = v.patternLen;
     _setInstrument(_instId);
 
-    Serial.print(F("[Player] voice: 楽器="));
-    Serial.print(INSTRUMENTS[_instId].name);
-    Serial.print(F("  輪唱オフセット="));
-    Serial.print(_offsetBeats);
-    Serial.println(F("拍"));
+    Serial.print(F("[Player] voice: 役割="));
+    Serial.print(_role == ROLE_RHYTHM ? F("リズム") : F("旋律(輪唱)"));
+    Serial.print(F("  楽器="));
+    Serial.println(INSTRUMENTS[_instId].name);
 }
 
 // ============================================================
@@ -162,9 +183,14 @@ void Player::_setInstrument(uint8_t instId) {
 //  発音制御
 // ============================================================
 void Player::_noteOn(float freq) {
+    const Instrument& in = INSTRUMENTS[_instId];
+    // 打楽器は固定周波数(baseFreq)、旋律楽器は音符の周波数で発音
+    const float f = (in.baseFreq > 0.0f) ? in.baseFreq : freq;
+
     noInterrupts();
-    phaseInc  = freq * (float)WT_SIZE / (float)AUDIO_SAMPLE_RATE;
-    phase     = 0.0f;
+    noiseMix = in.noiseMix;       // スネア等はノイズを混合
+    phaseInc = f * (float)WT_SIZE / (float)AUDIO_SAMPLE_RATE;  // トーン成分の高さ
+    phase    = 0.0f;
     adsrCount = 0;
     adsr      = A_ATTACK;
     interrupts();
@@ -190,11 +216,12 @@ void Player::play(uint16_t bpm) {
     _eventIdx     = 0;
     _loopBase     = 0.0f;
     _noteSounding = false;
-    _nextTrigBeat = _offsetBeats + SONG[0].startBeat;
+    // Master 指示で即開始（自己遅延なし）。先頭イベントの拍を起点にする。
+    _nextTrigBeat = (_role == ROLE_RHYTHM && _pattern) ? _pattern[0]
+                                                       : SONG[0].startBeat;
 
     Serial.print(F("[Player] play BPM=")); Serial.print(bpm);
-    Serial.print(F("  楽器=")); Serial.print(INSTRUMENTS[_instId].name);
-    Serial.print(F("  遅れ=")); Serial.print(_offsetBeats); Serial.println(F("拍"));
+    Serial.print(F("  楽器=")); Serial.println(INSTRUMENTS[_instId].name);
 }
 
 void Player::stop() {
@@ -249,6 +276,22 @@ void Player::update() {
     const uint32_t now  = millis();
     const float    beat = _elapsedBeats(now);
 
+    // ── リズム機（ドラム）: pattern[] の拍ごとにワンショット発音 ──
+    if (_role == ROLE_RHYTHM) {
+        if (!_pattern || _patternLen == 0) return;
+        while (beat >= _nextTrigBeat) {
+            _noteOn(0.0f);  // 周波数は楽器固定（キック=低音 / スネア=ノイズ）
+            // ドラムは sustain=0 で自然減衰するため noteOff 不要（ワンショット）
+            if (++_eventIdx >= _patternLen) {
+                _eventIdx  = 0;
+                _loopBase += SONG_LEN_BEATS;
+            }
+            _nextTrigBeat = _loopBase + _pattern[_eventIdx];
+        }
+        return;
+    }
+
+    // ── 旋律機（輪唱）: SONG[] を順に演奏 ──
     // 現在の音符を音符長ぶん鳴らしたら消す（スタッカート/余韻へ）
     if (_noteSounding && beat >= _noteOffBeat) {
         _noteOff();
@@ -269,7 +312,7 @@ void Player::update() {
             _eventIdx  = 0;
             _loopBase += SONG_LEN_BEATS;
         }
-        _nextTrigBeat = _offsetBeats + _loopBase + SONG[_eventIdx].startBeat;
+        _nextTrigBeat = _loopBase + SONG[_eventIdx].startBeat;
     }
 }
 

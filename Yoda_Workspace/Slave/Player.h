@@ -13,9 +13,10 @@
  *             位相アキュムレータで任意の高さの音を発振する。
  *  - 包絡線 : ADSR を FspTimer のサンプリング割り込み内で 1 サンプルずつ計算。
  *  - 出力   : A0（12bit DAC）→ TA7368 アンプ → スピーカー。
- *  - 輪唱   : setVoice() で機体番号に応じた「遅れ拍数」と「楽器」を選択。
- *             play() 後、自分の遅れ拍数だけ待ってから旋律を開始し、
- *             SONG_LEN_BEATS ごとにループする。
+ *  - 輪唱   : 入りタイミングは Master が管理する。スレーブは PLAY を受けた
+ *             瞬間に旋律を先頭から開始し、SONG_LEN_BEATS ごとにループする。
+ *             setVoice() では機体番号に応じた「楽器」のみを選ぶ。
+ *             スレーブ同士のずれは Master の SYNC で sync() が位相補正する。
  *
  * 【呼び出し関係（Slave.ino）】
  *   begin()        setup() で 1 回。DAC とサンプリング割り込みを起動。
@@ -57,8 +58,10 @@ private:
     float    _beatMs      = 500.0f;  ///< 1 拍の長さ [ms] = 60000 / bpm
     bool     _playing     = false;
     uint32_t _playStartMs = 0;       ///< play() を呼んだ時刻 [ms]
-    float    _offsetBeats = 0.0f;    ///< 輪唱の遅れ拍数（機体ごと）
     uint8_t  _instId      = INST_PIANO;
+    uint8_t  _role        = ROLE_MELODY; ///< 旋律(輪唱) or リズム(ドラム)
+    const float* _pattern = nullptr; ///< リズム機が叩く拍の配列（旋律機は nullptr）
+    uint8_t  _patternLen  = 0;       ///< _pattern の要素数
 
     // ── 拍スケジューラの状態 ──
     uint8_t  _eventIdx     = 0;      ///< 次に発火する音符の SONG[] インデックス

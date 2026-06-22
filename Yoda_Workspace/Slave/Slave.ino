@@ -117,8 +117,9 @@ void setup() {
 
     // ── 3. 演奏・LED モジュール初期化 ───────────────────────
     player.begin();
-    // 機体番号 (MY_SLAVE_ID) に応じて楽器と輪唱タイミングを選択する。
+    // 機体番号 (MY_SLAVE_ID) に応じて役割（旋律/リズム）と楽器を選択する。
     // 対応表は Song.h の VOICES[] を参照・編集すること。
+    // 輪唱の入りタイミングは Master が管理し、PLAY 受信で即演奏を開始する。
     player.setVoice(MY_SLAVE_ID);
     ledCtrl.begin();
 
