@@ -67,7 +67,7 @@
  * マスタから宛先 = この値 または IR_DEST_ALL(0x0) のパケットだけ処理する。
  * 5 台それぞれに異なる値を設定してください。
  */
-constexpr uint8_t MY_SLAVE_ID = IR_DEST_SLAVE1;  // ← ここを 1〜5 で変更
+constexpr uint8_t MY_SLAVE_ID = IR_DEST_SLAVE3;  // ← ここを 1〜5 で変更
 
 // ============================================================
 //  グローバル変数（アプリケーション状態）
@@ -77,6 +77,11 @@ static uint16_t g_bpm     = 120;
 
 /** 再生中フラグ (PLAY で true / STOP で false) */
 static bool     g_playing = false;
+
+/** パケットロス検出用: 直前の SYNC 拍カウンタ */
+static uint8_t  g_lastBeat    = 0;
+/** 最初の SYNC を受信するまで false（PLAY 後リセット）*/
+static bool     g_syncStarted = false;
 
 /** 音楽再生オブジェクト */
 static Player   player;
@@ -259,26 +264,31 @@ static void handlePacket(uint8_t dest, uint8_t cmd, uint8_t data) {
  *   g_bpm を使って演奏を開始する。
  */
 static void onPlay() {
-    if (g_playing) return;  // 既に再生中なら二重起動を防ぐ
+    if (g_playing) return;
 
-    g_playing = true;
-    Serial.print(F("[PLAY] 再生開始 BPM=")); Serial.println(g_bpm);
+    g_playing     = true;
+    g_syncStarted = false;  // ロス検出をリセット
+
+    const VoiceConfig& v = voiceForSlave(MY_SLAVE_ID);
+    Serial.print(F("[RX] PLAY  BPM="));    Serial.print(g_bpm);
+    Serial.print(F("  役割="));
+    Serial.print(v.role == ROLE_RHYTHM ? F("リズム") : F("旋律"));
+    Serial.print(F("  楽器="));             Serial.println(INSTRUMENTS[v.instrument].name);
 
     player.play(g_bpm);
-    // TODO: ledCtrl.startEffect();
 }
 
 /**
  * @brief STOP コマンドを受けたときの処理
  */
 static void onStop() {
-    if (!g_playing) return;  // 既に停止中なら何もしない
+    if (!g_playing) return;
 
-    g_playing = false;
-    Serial.println(F("[STOP] 再生停止"));
+    g_playing     = false;
+    g_syncStarted = false;
 
+    Serial.println(F("[RX] STOP"));
     player.stop();
-    // TODO: ledCtrl.stopEffect();
 }
 
 /**
@@ -291,12 +301,12 @@ static void onStop() {
  *   再生前に受信した場合は次回 PLAY 時のテンポとして保持する。
  */
 static void onBpm(uint8_t encodedBpm) {
-    // デコード: encodedBpm * BPM_IR_STEP + BPM_IR_MIN
+    const uint16_t prev = g_bpm;
     g_bpm = (uint16_t)encodedBpm * BPM_IR_STEP + BPM_IR_MIN;
-    Serial.print(F("[BPM] ")); Serial.println(g_bpm);
+    Serial.print(F("[RX] BPM  ")); Serial.print(prev);
+    Serial.print(F(" -> "));       Serial.println(g_bpm);
 
     player.setBpm(g_bpm);
-    // TODO: scheduler.setBpm(g_bpm);  // 拍タイミング更新
 }
 
 /**
@@ -319,7 +329,19 @@ static void onBpm(uint8_t encodedBpm) {
  *     自動的に輪唱になる。
  */
 static void onSync(uint8_t beatCount) {
-    ledCtrl.flash();       // 受信タイミングで可視光 LED を点滅
-    player.sync(beatCount); // drift 測定・位相補正・ログは Player 内で行う
-    //       内部でドリフト量を計測し、必要なら再生速度を微調整する（将来実装）
+    // ── パケットロス検出 ──
+    if (g_syncStarted) {
+        const uint8_t expected = g_lastBeat + 1;          // uint8_t で自動ラップ
+        const uint8_t lost     = (uint8_t)(beatCount - expected);
+        if (lost > 0) {
+            Serial.print(F("[LOSS] SYNC 欠落 ")); Serial.print(lost);
+            Serial.print(F("個  期待="));          Serial.print(expected);
+            Serial.print(F("  受信="));            Serial.println(beatCount);
+        }
+    }
+    g_lastBeat    = beatCount;
+    g_syncStarted = true;
+
+    ledCtrl.flash();
+    player.sync(beatCount);
 }

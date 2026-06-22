@@ -34,9 +34,9 @@ constexpr uint32_t AUDIO_SAMPLE_RATE = 16000;
 constexpr uint16_t WT_SIZE = 256;
 
 /** SYNC 補正：この値 [ms] を超えるズレのときだけ位相を補正する */
-constexpr int32_t  SYNC_CORRECT_MS = 25;
-/** SYNC 受信に固有の赤外線伝送遅延の推定値 [ms]（補正バイアス除去用）*/
-constexpr int32_t  IR_LATENCY_MS   = 50;
+constexpr int32_t  SYNC_CORRECT_MS = 20;
+/** 補正係数（0.5 = ハーフステップ補正でオーバーシュートを防ぐ）*/
+constexpr float    SYNC_DAMP       = 0.5f;
 
 class Player {
 public:
@@ -58,6 +58,15 @@ private:
     float    _beatMs      = 500.0f;  ///< 1 拍の長さ [ms] = 60000 / bpm
     bool     _playing     = false;
     uint32_t _playStartMs = 0;       ///< play() を呼んだ時刻 [ms]
+    uint32_t _playCalledUs = 0;      ///< play() を呼んだ時刻 [µs]（遅延計測用）
+    bool     _firstNote   = true;    ///< 初回 noteOn 計測フラグ
+
+    // ── SYNC 遅延統計 ──
+    int32_t  _errSum     = 0;   ///< 誤差の合計 [ms]（正=進み, 負=遅れ）
+    int32_t  _errAbsSum  = 0;   ///< |誤差| の合計 [ms]
+    int32_t  _errMax     = 0;   ///< 最大誤差 [ms]
+    int32_t  _errMin     = 0;   ///< 最小誤差 [ms]
+    uint16_t _errCount   = 0;   ///< サンプル数
     uint8_t  _instId      = INST_PIANO;
     uint8_t  _role        = ROLE_MELODY; ///< 旋律(輪唱) or リズム(ドラム)
     const float* _pattern = nullptr; ///< リズム機が叩く拍の配列（旋律機は nullptr）

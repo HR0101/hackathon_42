@@ -79,6 +79,7 @@ constexpr uint8_t  ROUND_SLAVE_DEST[ROUND_SLAVE_COUNT] = {
     IR_DEST_SLAVE1, IR_DEST_SLAVE2, IR_DEST_SLAVE3, IR_DEST_SLAVE4, IR_DEST_SLAVE5
 };
 
+
 // ============================================================
 //  インスタンス / グローバル変数
 // ============================================================

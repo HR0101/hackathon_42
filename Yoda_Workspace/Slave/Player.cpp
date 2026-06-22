@@ -41,7 +41,7 @@ namespace {
     //  サンプリング割り込み：ADSR 計算 → ウェーブテーブル読み出し → DAC 出力
     //  AUDIO_SAMPLE_RATE [Hz] 周期で呼ばれる。
     // --------------------------------------------------------
-    void audioISR(void*) {
+    void audioISR(timer_callback_args_t*) {
         // ── 1. ADSR 包絡線を 1 サンプルぶん進める ──
         switch (adsr) {
         case A_ATTACK:
@@ -98,7 +98,7 @@ namespace {
             out = DAC_MID;                            // 無音は中央値（ポップ音防止）
         }
 
-        // ── 3. DAC 出力 ──
+        // ── 3. DAC 出力（A0 の analogWrite は内部的に R_DAC_Write 直結なので ISR 安全）──
         analogWrite(AUDIO_PIN, out);
     }
 
@@ -118,15 +118,18 @@ void Player::begin() {
     uint8_t type;
     const int8_t ch = FspTimer::get_available_timer(type);
     if (ch >= 0) {
-        audioTimer.begin(TIMER_MODE_PERIODIC, type, ch,
-                         (float)AUDIO_SAMPLE_RATE, 50.0f, audioISR, nullptr);
+        bool ok = audioTimer.begin(TIMER_MODE_PERIODIC, type, ch,
+                                   (float)AUDIO_SAMPLE_RATE, 0.0f, audioISR, nullptr);
         audioTimer.setup_overflow_irq();
         audioTimer.open();
         audioTimer.start();
+        Serial.print(F("[Player] timer type=")); Serial.print(type);
+        Serial.print(F(" ch=")); Serial.print(ch);
+        Serial.print(F(" begin=")); Serial.println(ok ? F("OK") : F("FAIL"));
         Serial.print(F("[Player] ready  pin=A0(DAC)  fs="));
-        Serial.print(AUDIO_SAMPLE_RATE); Serial.println(F("Hz  amp=TA7368"));
+        Serial.print(AUDIO_SAMPLE_RATE); Serial.println(F("Hz"));
     } else {
-        Serial.println(F("[Player] ERROR: 空きタイマーがありません"));
+        Serial.println(F("[Player] ERROR: 空きタイマーなし"));
     }
 }
 
@@ -188,12 +191,20 @@ void Player::_noteOn(float freq) {
     const float f = (in.baseFreq > 0.0f) ? in.baseFreq : freq;
 
     noInterrupts();
-    noiseMix = in.noiseMix;       // スネア等はノイズを混合
-    phaseInc = f * (float)WT_SIZE / (float)AUDIO_SAMPLE_RATE;  // トーン成分の高さ
+    noiseMix = in.noiseMix;
+    phaseInc = f * (float)WT_SIZE / (float)AUDIO_SAMPLE_RATE;
     phase    = 0.0f;
     adsrCount = 0;
     adsr      = A_ATTACK;
     interrupts();
+
+    // ── 初回発音の遅延を計測（PLAY受信 → 最初の音出しまでの時間）──
+    if (_firstNote) {
+        _firstNote = false;
+        Serial.print(F("[TIMING] play→noteOn = "));
+        Serial.print(micros() - _playCalledUs);
+        Serial.println(F(" us"));
+    }
 }
 
 void Player::_noteOff() {
@@ -213,6 +224,10 @@ void Player::play(uint16_t bpm) {
     setBpm(bpm);
     _playing      = true;
     _playStartMs  = millis();
+    _playCalledUs = micros();
+    _firstNote    = true;
+    _errSum = _errAbsSum = _errMax = _errMin = 0;
+    _errCount = 0;
     _eventIdx     = 0;
     _loopBase     = 0.0f;
     _noteSounding = false;
@@ -228,7 +243,19 @@ void Player::stop() {
     _playing      = false;
     _noteSounding = false;
     _noteOff();
+
     Serial.println(F("[Player] stop"));
+    if (_errCount == 0) return;
+
+    const int32_t avg    = _errSum    / (int32_t)_errCount;
+    const int32_t avgAbs = _errAbsSum / (int32_t)_errCount;
+    Serial.println(F("===== SYNC 遅延計測結果 ====="));
+    Serial.print(F("  サンプル数 : ")); Serial.println(_errCount);
+    Serial.print(F("  平均誤差   : ")); Serial.print(avg);    Serial.println(F(" ms  (正=進み, 負=遅れ)"));
+    Serial.print(F("  平均|誤差| : ")); Serial.print(avgAbs); Serial.println(F(" ms"));
+    Serial.print(F("  最大       : ")); Serial.print(_errMax); Serial.println(F(" ms"));
+    Serial.print(F("  最小       : ")); Serial.print(_errMin); Serial.println(F(" ms"));
+    Serial.println(F("============================="));
 }
 
 void Player::setBpm(uint16_t bpm) {
@@ -249,7 +276,6 @@ void Player::setBpm(uint16_t bpm) {
 //  sync() ── SYNC 受信時の位相ドリフト補正
 // ============================================================
 void Player::sync(uint8_t beatCount) {
-    (void)beatCount;
     if (!_playing) return;
 
     const uint32_t now  = millis();
@@ -257,14 +283,24 @@ void Player::sync(uint8_t beatCount) {
 
     // 最寄りの整数拍からのズレ（-0.5〜+0.5 拍）
     const float frac = beat - roundf(beat);
-    // ズレを ms に直し、SYNC 固有の赤外線伝送遅延ぶんを差し引く
-    int32_t errMs = (int32_t)(frac * _beatMs) - IR_LATENCY_MS;
+    const int32_t errMs = (int32_t)(frac * _beatMs);
 
+    // ── 統計蓄積 ──
+    _errSum    += errMs;
+    _errAbsSum += (errMs >= 0) ? errMs : -errMs;
+    if (_errCount == 0 || errMs > _errMax) _errMax = errMs;
+    if (_errCount == 0 || errMs < _errMin) _errMin = errMs;
+    _errCount++;
+
+    // SYNC_CORRECT_MS を超えるズレのみ補正。SYNC_DAMP で過補正（発散）を防ぐ。
     if (errMs > SYNC_CORRECT_MS || errMs < -SYNC_CORRECT_MS) {
-        // 進み過ぎ/遅れ過ぎを打ち消す向きに時刻基準をずらす
-        _playStartMs = (uint32_t)((int32_t)_playStartMs + errMs);
-        Serial.print(F("[SYNC] 補正 ")); Serial.print(errMs); Serial.println(F("ms"));
+        const int32_t correction = (int32_t)(errMs * SYNC_DAMP);
+        _playStartMs = (uint32_t)((int32_t)_playStartMs + correction);
     }
+    Serial.print(F("[SYNC] beat=")); Serial.print(beatCount);
+    Serial.print(F("  err="));
+    if (errMs >= 0) Serial.print('+');
+    Serial.print(errMs); Serial.println(F("ms"));
 }
 
 // ============================================================
