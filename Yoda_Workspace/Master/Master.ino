@@ -49,13 +49,35 @@
 // ============================================================
 //  定数
 // ============================================================
-constexpr uint8_t  BPM_MIN     = 40;   ///< BPM 最小値
-constexpr uint8_t  BPM_MAX     = 240;  ///< BPM 最大値
-constexpr uint8_t  BPM_DEFAULT = 120;  ///< 起動時の初期 BPM
-constexpr uint8_t  BPM_STEP    = 5;    ///< bpm+/bpm- 1 回あたりの変化量
+constexpr uint16_t BPM_MIN     = 10;   ///< BPM 最小値
+constexpr uint16_t BPM_MAX     = 600;  ///< BPM 最大値
+constexpr uint16_t BPM_DEFAULT = 120;  ///< 起動時の初期 BPM
+constexpr uint16_t BPM_STEP    = 5;    ///< bpm+/bpm- 1 回あたりの変化量
 
 /** シリアル受信バッファのサイズ (コマンド最大文字数 + 1) */
 constexpr uint8_t  SERIAL_BUF_SIZE = 32;
+
+// ============================================================
+//  輪唱スケジュール（★ ここで輪唱の入りタイミングを管理する ★）
+// ============================================================
+/**
+ * 各スレーブが「再生開始してから何拍後に演奏を始めるか」を Master が管理する。
+ * Master は PLAY コマンドを各スレーブへ個別に時間差で送ることで輪唱を作る。
+ * スレーブ側は PLAY を受け取った瞬間に即演奏を開始する（自己遅延なし）。
+ *
+ *   ROUND_START_BEAT[i] … i 号機(1始まり)の開始拍
+ *   ROUND_SLAVE_DEST[i] … i 号機の宛先アドレス
+ *
+ * 【機体構成】 1〜3号機 = 旋律（輪唱）, 4〜5号機 = リズム（ドラム）
+ *   - 旋律 3 機は 8 拍（2小節）ずつずらして 3 部輪唱にする → 0, 8, 16
+ *   - リズム 2 機は輪唱初回（拍 0）から演奏を開始する        → 0, 0
+ *   ※ 各機の役割・楽器は Slave 側 Song.h の VOICES[] と対応させること。
+ */
+constexpr uint8_t  ROUND_SLAVE_COUNT = 5;
+constexpr uint16_t ROUND_START_BEAT[ROUND_SLAVE_COUNT] = { 0, 8, 16, 0, 0 };
+constexpr uint8_t  ROUND_SLAVE_DEST[ROUND_SLAVE_COUNT] = {
+    IR_DEST_SLAVE1, IR_DEST_SLAVE2, IR_DEST_SLAVE3, IR_DEST_SLAVE4, IR_DEST_SLAVE5
+};
 
 // ============================================================
 //  インスタンス / グローバル変数
@@ -67,13 +89,19 @@ static Tx tx;
 static LedCtrl ledCtrl;
 
 /** 現在の BPM 値 */
-static uint8_t  g_bpm        = BPM_DEFAULT;
+static uint16_t g_bpm        = BPM_DEFAULT;
 
 /** 再生中フラグ */
 static bool     g_playing    = false;
 
 /** 最後に SYNC を送った時刻 [ms]（ドリフト補正のため累積加算で管理）*/
 static uint32_t g_lastSyncMs = 0;
+
+/** 再生開始からの経過拍数（輪唱スケジュールと SYNC の拍カウンタを兼ねる）*/
+static uint16_t g_beat = 0;
+
+/** 各スレーブへ開始 PLAY を送信済みか（輪唱の二重送信防止）*/
+static bool     g_started[ROUND_SLAVE_COUNT] = { false };
 
 // ── シリアル受信バッファ ─────────────────────────────────────
 /** 1 コマンド分の文字を溜めるバッファ */
@@ -88,6 +116,7 @@ static void sendCommand(uint8_t dest, IrCmd cmd, uint8_t data = 0);
 static void handleSerial();
 static void execCommand(const char* line);
 static void updateSyncTiming();
+static void dispatchRoundStarts(uint16_t beat);
 static void printStatus();
 static void printHelp();
 
@@ -116,7 +145,7 @@ void setup() {
     // ── 起動時に全スレーブへ初期 BPM を送信 ─────────────────
     // スレーブ側の setup() 完了を待ってから送信する
     delay(500);
-    sendCommand(IR_DEST_ALL, IrCmd::BPM, g_bpm);
+    sendCommand(IR_DEST_ALL, IrCmd::BPM, (uint8_t)((g_bpm - BPM_IR_MIN) / BPM_IR_STEP));
 
     printStatus();
     printHelp();
@@ -227,17 +256,21 @@ static void execCommand(const char* line) {
         }
         // STEP 1: 最新 BPM を全スレーブへ送る
         //         → スレーブが古い BPM で再生するのを防ぐ
-        sendCommand(IR_DEST_ALL, IrCmd::BPM, g_bpm);
+        sendCommand(IR_DEST_ALL, IrCmd::BPM, (uint8_t)((g_bpm - BPM_IR_MIN) / BPM_IR_STEP));
 
         // STEP 2: BPM パケットの受信・処理が完了するまで少し待つ
         delay(30);
 
-        // STEP 3: PLAY コマンドを全スレーブへ送る
-        //         → 全スレーブが同じタイミングで一斉に再生を開始する
-        sendCommand(IR_DEST_ALL, IrCmd::PLAY, 0);
-
+        // STEP 3: 輪唱スケジュールを初期化して再生状態へ
+        //         PLAY は全員一斉ではなく、各スレーブへ時間差で個別送信する。
+        //         輪唱タイミングはすべて Master(ROUND_START_BEAT[]) が管理する。
+        g_beat       = 0;
         g_playing    = true;
-        g_lastSyncMs = millis();  // SYNC タイマーをここからリスタート
+        g_lastSyncMs = millis();  // SYNC/拍タイマーをここからリスタート
+        for (uint8_t i = 0; i < ROUND_SLAVE_COUNT; i++) g_started[i] = false;
+
+        // STEP 4: 開始拍 0 のスレーブを今すぐ始動させる（残りは loop で時間差送信）
+        dispatchRoundStarts(g_beat);
         printStatus();
 
     // ---------- stop ----------
@@ -254,7 +287,7 @@ static void execCommand(const char* line) {
     } else if (strcmp(lower, "bpm+") == 0) {
         if (g_bpm <= BPM_MAX - BPM_STEP) {
             g_bpm += BPM_STEP;
-            sendCommand(IR_DEST_ALL, IrCmd::BPM, g_bpm);
+            sendCommand(IR_DEST_ALL, IrCmd::BPM, (uint8_t)((g_bpm - BPM_IR_MIN) / BPM_IR_STEP));
         } else {
             Serial.print(F("[INFO] BPM 上限 (")); Serial.print(BPM_MAX);
             Serial.println(F(") に達しています。"));
@@ -265,7 +298,7 @@ static void execCommand(const char* line) {
     } else if (strcmp(lower, "bpm-") == 0) {
         if (g_bpm >= BPM_MIN + BPM_STEP) {
             g_bpm -= BPM_STEP;
-            sendCommand(IR_DEST_ALL, IrCmd::BPM, g_bpm);
+            sendCommand(IR_DEST_ALL, IrCmd::BPM, (uint8_t)((g_bpm - BPM_IR_MIN) / BPM_IR_STEP));
         } else {
             Serial.print(F("[INFO] BPM 下限 (")); Serial.print(BPM_MIN);
             Serial.println(F(") に達しています。"));
@@ -285,8 +318,8 @@ static void execCommand(const char* line) {
             Serial.print(BPM_MAX);
             Serial.println(F(" の範囲で指定してください。"));
         } else {
-            g_bpm = static_cast<uint8_t>(val);
-            sendCommand(IR_DEST_ALL, IrCmd::BPM, g_bpm);
+            g_bpm = static_cast<uint16_t>(val);
+            sendCommand(IR_DEST_ALL, IrCmd::BPM, (uint8_t)((g_bpm - BPM_IR_MIN) / BPM_IR_STEP));
             printStatus();
         }
 
@@ -350,24 +383,27 @@ static void sendCommand(uint8_t dest, IrCmd cmd, uint8_t data) {
 }
 
 // ============================================================
-//  updateSyncTiming() ── 自動 SYNC 定期送信
+//  updateSyncTiming() ── 1 拍ごとの SYNC 送信 + 輪唱ディスパッチ
 // ============================================================
 /**
- * @brief 再生中のとき BPM から計算した間隔で SYNC を全スレーブへ送信する
+ * @brief 再生中、1 拍ごとに輪唱の始動判定と SYNC 送信を行う
  *
  * @details
  *   1 拍の間隔 [ms] = 60000 / BPM
- *   (例) BPM=120 → 500ms ごとに SYNC を送信
+ *   (例) BPM=120 → 500ms ごと
  *
  *   【ドリフト補正】
  *     g_lastSyncMs += beatMs とすることで、sendCommand() の処理時間が
  *     タイミングに積み重なるドリフトを防ぐ。
  *
- *   【data = beatCount の使い方】
- *     beatCount % 4 == 0 → 4/4 拍子の小節先頭
- *     beatCount % 2 == 0 → 2 拍ごとのダウンビート
- *     スレーブ側で「(N-1) × 4 拍後に PLAY する」ように設計すれば
- *     beatCount を使って輪唱の入りタイミングを制御できる。
+ *   【輪唱の管理（Master 側）】
+ *     g_beat（経過拍）を 1 拍ごとに加算し、dispatchRoundStarts() で
+ *     開始拍に達したスレーブへ個別 PLAY を送る。輪唱の入りタイミングは
+ *     すべて Master が制御し、スレーブは PLAY 受信で即演奏を開始する。
+ *
+ *   【SYNC の役割】
+ *     全スレーブへ毎拍ブロードキャストし、各スレーブの内部タイマの
+ *     位相ズレ（遅延）を補正させる。data には g_beat の下位 8bit を載せる。
  */
 static void updateSyncTiming() {
     if (!g_playing) return;
@@ -376,11 +412,42 @@ static void updateSyncTiming() {
 
     if (millis() - g_lastSyncMs >= beatMs) {
         g_lastSyncMs += beatMs;  // 累積加算でドリフト防止
+        g_beat++;                // 再生開始からの経過拍
 
-        static uint8_t beatCount = 0;
-        sendCommand(IR_DEST_ALL, IrCmd::SYNC, beatCount);
+        // ── 1. 輪唱の入りタイミング: 開始拍に達したスレーブを個別始動 ──
+        dispatchRoundStarts(g_beat);
+
+        // ── 2. 全スレーブへ SYNC を送信（位相ドリフト補正用）──
+        //      data には拍カウンタの下位 8bit を載せる
+        sendCommand(IR_DEST_ALL, IrCmd::SYNC, (uint8_t)(g_beat & 0xFF));
         ledCtrl.flash();  // 送信タイミングで可視光 LED を点滅
-        beatCount++;  // uint8_t のオーバーフローで 0 に自動リセット
+    }
+}
+
+// ============================================================
+//  dispatchRoundStarts() ── 開始拍に達したスレーブへ個別 PLAY を送る
+// ============================================================
+/**
+ * @brief 経過拍 beat に開始タイミングが一致したスレーブへ PLAY を個別送信する
+ *
+ * @param beat 再生開始からの経過拍数
+ *
+ * @details
+ *   ROUND_START_BEAT[i] <= beat になった未始動スレーブへ PLAY を送り、
+ *   g_started[i] を立てて二重送信を防ぐ。これにより輪唱の入りタイミングを
+ *   すべて Master 側で制御する。スレーブは PLAY 受信で即演奏を開始する。
+ */
+static void dispatchRoundStarts(uint16_t beat) {
+    for (uint8_t i = 0; i < ROUND_SLAVE_COUNT; i++) {
+        if (!g_started[i] && beat >= ROUND_START_BEAT[i]) {
+            sendCommand(ROUND_SLAVE_DEST[i], IrCmd::PLAY, 0);
+            g_started[i] = true;
+            Serial.print(F("[ROUND] "));
+            Serial.print(i + 1);
+            Serial.print(F("号機 開始 (拍 "));
+            Serial.print(ROUND_START_BEAT[i]);
+            Serial.println(F(")"));
+        }
     }
 }
 
@@ -407,7 +474,7 @@ static void printHelp() {
     Serial.println(F("--- コマンド一覧 ----------------------------"));
     Serial.println(F("  play        全スレーブへ BPM 送信 -> PLAY"));
     Serial.println(F("  stop        全スレーブへ STOP 送信"));
-    Serial.println(F("  bpm <値>    BPM を指定値 (40〜240) に変更"));
+    Serial.println(F("  bpm <値>    BPM を指定値 (10〜600, 5刻み) に変更"));
     Serial.println(F("  bpm+        BPM を +5"));
     Serial.println(F("  bpm-        BPM を -5"));
     Serial.println(F("  sync        SYNC を今すぐ手動送信"));

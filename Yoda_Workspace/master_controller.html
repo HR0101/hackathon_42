@@ -295,8 +295,8 @@
     <div class="bpm-controls">
       <button class="btn-bpm-step" id="btn-bpm-dn" onclick="cmdBpmDown()" disabled>−</button>
       <div class="bpm-input-wrap">
-        <input type="number" id="bpm-input" value="120" min="40" max="240" step="1"
-               placeholder="40〜240" onkeydown="if(event.key==='Enter') cmdBpmSet()">
+        <input type="number" id="bpm-input" value="120" min="10" max="600" step="5"
+               placeholder="10〜600" onkeydown="if(event.key==='Enter') cmdBpmSet()">
         <button class="btn-bpm-set" id="btn-bpm-set" onclick="cmdBpmSet()" disabled>SET</button>
       </div>
       <button class="btn-bpm-step" id="btn-bpm-up" onclick="cmdBpmUp()" disabled>＋</button>
@@ -332,8 +332,8 @@ let isConnected = false;
 let bpm      = 120;
 let playing  = false;
 
-const BPM_MIN  = 40;
-const BPM_MAX  = 240;
+const BPM_MIN  = 10;
+const BPM_MAX  = 600;
 const BPM_STEP = 5;
 const BAUD     = 115200;
 
