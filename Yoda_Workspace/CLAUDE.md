@@ -34,6 +34,7 @@ Serial monitor baud rate: **115200**.
 Yoda_Workspace/
 ├── Master/     — Master sketch (IR transmitter, controls all slaves)
 ├── Slave/      — Slave sketch (IR receiver, plays music)
+│   └── Song.h  — all song / timbre / per-unit round config (edit this)
 └── Shared/     — Canonical source for IrDef.h and Packet.h/cpp
 ```
 
@@ -73,9 +74,23 @@ Serial commands: `play`, `stop`, `bpm <val>`, `bpm+`, `bpm-`, `sync`, `status`, 
 
 `Rx` is a singleton (required by `attachInterrupt`). It registers a FALLING-edge ISR on **D2** that measures intervals between edges to decode NEC frames. State machine: `IDLE → LEADER_DETECTED → RECEIVING → IDLE`. `decode()` atomically reads the completed 24-bit packet using `noInterrupts()`/`interrupts()`.
 
+### Slave audio engine (`Player` + `Song.h`)
+
+The Slave plays music entirely on-device (no PC/external source):
+
+- **Additive synthesis**: at startup `Player` builds a one-cycle wavetable from each instrument's harmonic array, then drives a phase accumulator to sound any pitch (no waveform-loop discontinuity).
+- **ADSR**: computed per-sample inside an `FspTimer` sampling ISR at `AUDIO_SAMPLE_RATE` (16 kHz).
+- **Output**: A0 (12-bit DAC) → coupling cap → TA7368 amp → 8 Ω speaker.
+- **Round (輪唱)**: after `play()`, each unit waits its per-voice offset, plays the melody, and loops every `SONG_LEN_BEATS` (32). `sync()` corrects phase drift (subtracting estimated IR latency to avoid false correction).
+
+**All song/timbre/round data lives in `Slave/Song.h`** — the single file to edit:
+1. `SONG[]` — melody (note, start beat, duration).
+2. `INSTRUMENTS[]` — per-instrument harmonics + ADSR (Piano / Trumpet / Mokkin×2, ported from `055/`).
+3. `VOICES[]` — maps unit number → round offset (beats) + instrument. `Slave.ino`'s `MY_SLAVE_ID` (1–5) selects the row via `player.setVoice()`.
+
 ### Stub modules (not yet implemented)
 
-`Scheduler`, `LedCtrl` (Master) and `Player`, `LedCtrl` (Slave) have header stubs. Their `begin()` / `update()` calls are commented out in the `.ino` files; uncomment when implementing.
+`Scheduler` (Master) and `LedCtrl` (Master) have header stubs. Their `begin()` / `update()` calls are commented out in `Master.ino`; uncomment when implementing. (`Player` and both `LedCtrl` are now implemented.)
 
 ### Pin assignments
 
@@ -84,6 +99,7 @@ Serial commands: `play`, `stop`, `bpm <val>`, `bpm+`, `bpm-`, `sync`, `status`, 
 | D9  | IR TX (38 kHz carrier out, Master) |
 | D2  | IR RX (FALLING edge interrupt, Slave) |
 | D4  | Effect LED |
+| A0  | Audio out (12-bit DAC → TA7368 amp → speaker, Slave) |
 
 ## Git Workflow
 

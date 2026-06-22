@@ -55,7 +55,7 @@
 #include "Config.h"  // プロジェクト固有設定（現在は空ファイル）
 
 // 以下は各モジュール実装後にコメントを外す
-// #include "Player.h"    // 音楽・メトロノーム再生
+#include "Player.h"    // 音楽・メトロノーム再生
 #include "LedCtrl.h"   // 演出 LED 制御
 
 // ============================================================
@@ -73,10 +73,13 @@ constexpr uint8_t MY_SLAVE_ID = IR_DEST_SLAVE1;  // ← ここを 1〜5 で変�
 //  グローバル変数（アプリケーション状態）
 // ============================================================
 /** 受信した最新の BPM 値 */
-static uint8_t  g_bpm     = 120;
+static uint16_t g_bpm     = 120;
 
 /** 再生中フラグ (PLAY で true / STOP で false) */
 static bool     g_playing = false;
+
+/** 音楽再生オブジェクト */
+static Player   player;
 
 /** 可視光 LED 制御オブジェクト */
 static LedCtrl  ledCtrl;
@@ -112,8 +115,11 @@ void setup() {
     // これ以降、IR 信号が来るたびに onEdge() が自動で呼ばれる。
     Rx::getInstance().begin();
 
-    // ── 3. 未実装モジュール初期化（実装後にコメントを外す） ───
-    // player.begin();
+    // ── 3. 演奏・LED モジュール初期化 ───────────────────────
+    player.begin();
+    // 機体番号 (MY_SLAVE_ID) に応じて楽器と輪唱タイミングを選択する。
+    // 対応表は Song.h の VOICES[] を参照・編集すること。
+    player.setVoice(MY_SLAVE_ID);
     ledCtrl.begin();
 
     Serial.println(F("受信待機中..."));
@@ -156,7 +162,7 @@ void loop() {
     }
 
     // ── 5. 未実装モジュールの更新（実装後にコメントを外す） ───
-    // player.update();
+    player.update();
     ledCtrl.update();
 
     // ── 6. 赤外線受信状況の定期ダンプ（デバッグ時はコメントを外す） ──
@@ -257,7 +263,7 @@ static void onPlay() {
     g_playing = true;
     Serial.print(F("[PLAY] 再生開始 BPM=")); Serial.println(g_bpm);
 
-    // TODO: player.play(g_bpm);
+    player.play(g_bpm);
     // TODO: ledCtrl.startEffect();
 }
 
@@ -270,7 +276,7 @@ static void onStop() {
     g_playing = false;
     Serial.println(F("[STOP] 再生停止"));
 
-    // TODO: player.stop();
+    player.stop();
     // TODO: ledCtrl.stopEffect();
 }
 
@@ -283,12 +289,13 @@ static void onStop() {
  *   再生中に受信した場合はテンポを即座に変更する。
  *   再生前に受信した場合は次回 PLAY 時のテンポとして保持する。
  */
-static void onBpm(uint8_t bpm) {
-    g_bpm = bpm;
-    Serial.print(F("[BPM] ")); Serial.println(bpm);
+static void onBpm(uint8_t encodedBpm) {
+    // デコード: encodedBpm * BPM_IR_STEP + BPM_IR_MIN
+    g_bpm = (uint16_t)encodedBpm * BPM_IR_STEP + BPM_IR_MIN;
+    Serial.print(F("[BPM] ")); Serial.println(g_bpm);
 
-    // TODO: player.setBpm(bpm);
-    // TODO: scheduler.setBpm(bpm);  // 拍タイミング更新
+    player.setBpm(g_bpm);
+    // TODO: scheduler.setBpm(g_bpm);  // 拍タイミング更新
 }
 
 /**
@@ -311,15 +318,7 @@ static void onBpm(uint8_t bpm) {
  *     自動的に輪唱になる。
  */
 static void onSync(uint8_t beatCount) {
-    Serial.print(F("[SYNC] beat=")); Serial.println(beatCount);
-
-    ledCtrl.flash();  // 受信タイミングで可視光 LED を点滅
-
-    // 小節先頭（4拍ごと）の検出例
-    if (beatCount % 4 == 0) {
-        Serial.println(F("  => 小節先頭"));
-    }
-
-    // TODO: player.sync(beatCount);
-    //       内部でドリフト量を計測し、必要なら再生速度を微調整する
+    ledCtrl.flash();       // 受信タイミングで可視光 LED を点滅
+    player.sync(beatCount); // drift 測定・位相補正・ログは Player 内で行う
+    //       内部でドリフト量を計測し、必要なら再生速度を微調整する（将来実装）
 }
