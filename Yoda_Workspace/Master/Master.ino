@@ -49,10 +49,10 @@
 // ============================================================
 //  定数
 // ============================================================
-constexpr uint8_t  BPM_MIN     = 40;   ///< BPM 最小値
-constexpr uint8_t  BPM_MAX     = 240;  ///< BPM 最大値
-constexpr uint8_t  BPM_DEFAULT = 120;  ///< 起動時の初期 BPM
-constexpr uint8_t  BPM_STEP    = 5;    ///< bpm+/bpm- 1 回あたりの変化量
+constexpr uint16_t BPM_MIN     = 10;   ///< BPM 最小値
+constexpr uint16_t BPM_MAX     = 600;  ///< BPM 最大値
+constexpr uint16_t BPM_DEFAULT = 120;  ///< 起動時の初期 BPM
+constexpr uint16_t BPM_STEP    = 5;    ///< bpm+/bpm- 1 回あたりの変化量
 
 /** シリアル受信バッファのサイズ (コマンド最大文字数 + 1) */
 constexpr uint8_t  SERIAL_BUF_SIZE = 32;
@@ -67,7 +67,7 @@ static Tx tx;
 static LedCtrl ledCtrl;
 
 /** 現在の BPM 値 */
-static uint8_t  g_bpm        = BPM_DEFAULT;
+static uint16_t g_bpm        = BPM_DEFAULT;
 
 /** 再生中フラグ */
 static bool     g_playing    = false;
@@ -116,7 +116,7 @@ void setup() {
     // ── 起動時に全スレーブへ初期 BPM を送信 ─────────────────
     // スレーブ側の setup() 完了を待ってから送信する
     delay(500);
-    sendCommand(IR_DEST_ALL, IrCmd::BPM, g_bpm);
+    sendCommand(IR_DEST_ALL, IrCmd::BPM, (uint8_t)((g_bpm - BPM_IR_MIN) / BPM_IR_STEP));
 
     printStatus();
     printHelp();
@@ -227,7 +227,7 @@ static void execCommand(const char* line) {
         }
         // STEP 1: 最新 BPM を全スレーブへ送る
         //         → スレーブが古い BPM で再生するのを防ぐ
-        sendCommand(IR_DEST_ALL, IrCmd::BPM, g_bpm);
+        sendCommand(IR_DEST_ALL, IrCmd::BPM, (uint8_t)((g_bpm - BPM_IR_MIN) / BPM_IR_STEP));
 
         // STEP 2: BPM パケットの受信・処理が完了するまで少し待つ
         delay(30);
@@ -254,7 +254,7 @@ static void execCommand(const char* line) {
     } else if (strcmp(lower, "bpm+") == 0) {
         if (g_bpm <= BPM_MAX - BPM_STEP) {
             g_bpm += BPM_STEP;
-            sendCommand(IR_DEST_ALL, IrCmd::BPM, g_bpm);
+            sendCommand(IR_DEST_ALL, IrCmd::BPM, (uint8_t)((g_bpm - BPM_IR_MIN) / BPM_IR_STEP));
         } else {
             Serial.print(F("[INFO] BPM 上限 (")); Serial.print(BPM_MAX);
             Serial.println(F(") に達しています。"));
@@ -265,7 +265,7 @@ static void execCommand(const char* line) {
     } else if (strcmp(lower, "bpm-") == 0) {
         if (g_bpm >= BPM_MIN + BPM_STEP) {
             g_bpm -= BPM_STEP;
-            sendCommand(IR_DEST_ALL, IrCmd::BPM, g_bpm);
+            sendCommand(IR_DEST_ALL, IrCmd::BPM, (uint8_t)((g_bpm - BPM_IR_MIN) / BPM_IR_STEP));
         } else {
             Serial.print(F("[INFO] BPM 下限 (")); Serial.print(BPM_MIN);
             Serial.println(F(") に達しています。"));
@@ -285,8 +285,8 @@ static void execCommand(const char* line) {
             Serial.print(BPM_MAX);
             Serial.println(F(" の範囲で指定してください。"));
         } else {
-            g_bpm = static_cast<uint8_t>(val);
-            sendCommand(IR_DEST_ALL, IrCmd::BPM, g_bpm);
+            g_bpm = static_cast<uint16_t>(val);
+            sendCommand(IR_DEST_ALL, IrCmd::BPM, (uint8_t)((g_bpm - BPM_IR_MIN) / BPM_IR_STEP));
             printStatus();
         }
 
@@ -407,7 +407,7 @@ static void printHelp() {
     Serial.println(F("--- コマンド一覧 ----------------------------"));
     Serial.println(F("  play        全スレーブへ BPM 送信 -> PLAY"));
     Serial.println(F("  stop        全スレーブへ STOP 送信"));
-    Serial.println(F("  bpm <値>    BPM を指定値 (40〜240) に変更"));
+    Serial.println(F("  bpm <値>    BPM を指定値 (10〜600, 5刻み) に変更"));
     Serial.println(F("  bpm+        BPM を +5"));
     Serial.println(F("  bpm-        BPM を -5"));
     Serial.println(F("  sync        SYNC を今すぐ手動送信"));

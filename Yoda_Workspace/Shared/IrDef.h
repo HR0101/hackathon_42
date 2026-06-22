@@ -113,6 +113,15 @@ constexpr uint8_t IR_DEST_SLAVE5 = 0x5;  ///< スレーブ 5 号機
 enum class IrCmd : uint8_t {
     PLAY = 0x1,  ///< 再生開始 (data: 無効)
     STOP = 0x2,  ///< 再生停止 (data: 無効)
-    BPM  = 0x3,  ///< BPM 設定 (data: BPM値 40〜240)
+    BPM  = 0x3,  ///< BPM 設定 (data: エンコード済み値, 下記 BPM_IR_* 参照)
     SYNC = 0x4,  ///< タイミング同期 (data: 小節位相など)
 };
+
+// ============================================================
+//  BPM IR パケットエンコーディング
+//  data フィールドは 8bit のため BPM(10〜600) を圧縮して格納する
+//    送信(Master): data = (bpm - BPM_IR_MIN) / BPM_IR_STEP  → 0〜118
+//    受信(Slave) : bpm  = (uint16_t)data * BPM_IR_STEP + BPM_IR_MIN
+// ============================================================
+constexpr uint16_t BPM_IR_MIN  = 10;  ///< エンコード基準値 (BPM の最小値)
+constexpr uint16_t BPM_IR_STEP = 5;   ///< エンコード分解能 (BPM_STEP と同値)
