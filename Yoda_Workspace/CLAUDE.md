@@ -94,9 +94,9 @@ The Slave plays music entirely on-device (no PC/external source):
 
 Round *timing* is NOT here — it is on the Master (`ROUND_START_BEAT[]`).
 
-### Stub modules (not yet implemented)
+### Implemented modules
 
-`Scheduler` (Master) and `LedCtrl` (Master) have header stubs. Their `begin()` / `update()` calls are commented out in `Master.ino`; uncomment when implementing. (`Player` and both `LedCtrl` are now implemented.)
+`Player` (Slave), `LedCtrl` (Slave and Master) are fully implemented. `Scheduler` (Master) stub exists in `Scheduler.h/cpp` but is unused — beat timing is handled directly in `updateSyncTiming()` in `Master.ino`.
 
 ### Pin assignments
 

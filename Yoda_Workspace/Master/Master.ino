@@ -42,8 +42,6 @@
 #include "Tx.h"      // IR 送信クラス
 #include "Config.h"  // プロジェクト固有設定（現在は空ファイル）
 
-// 以下は各モジュール実装後にコメントを外す
-// #include "Scheduler.h"  // BPM スケジューラ（拍タイミング生成）
 #include "LedCtrl.h"    // 演出 LED 制御
 
 // ============================================================
@@ -79,6 +77,7 @@ constexpr uint8_t  ROUND_SLAVE_DEST[ROUND_SLAVE_COUNT] = {
     IR_DEST_SLAVE1, IR_DEST_SLAVE2, IR_DEST_SLAVE3, IR_DEST_SLAVE4, IR_DEST_SLAVE5
 };
 
+
 // ============================================================
 //  インスタンス / グローバル変数
 // ============================================================
@@ -102,6 +101,9 @@ static uint16_t g_beat = 0;
 
 /** 各スレーブへ開始 PLAY を送信済みか（輪唱の二重送信防止）*/
 static bool     g_started[ROUND_SLAVE_COUNT] = { false };
+
+/** 論理コマンド連番 (2bit ラップ, 反復送信の重複除去に使用) */
+static uint8_t  g_msgSeq = 0;
 
 // ── シリアル受信バッファ ─────────────────────────────────────
 /** 1 コマンド分の文字を溜めるバッファ */
@@ -138,8 +140,6 @@ void setup() {
     // 76kHz 周期割り込みを起動する（搬送波はまだ出力しない）
     tx.begin();
 
-    // ── 未実装モジュール初期化（実装後にコメントを外す）──────
-    // scheduler.begin();
     ledCtrl.begin();
 
     // ── 起動時に全スレーブへ初期 BPM を送信 ─────────────────
@@ -163,8 +163,6 @@ void loop() {
     // 再生中のときだけ 1 拍ごとのタイミングで SYNC を全員に送る
     updateSyncTiming();
 
-    // ── 3. 未実装モジュールの更新（実装後にコメントを外す）──
-    // scheduler.update();
     ledCtrl.update();
 }
 
@@ -365,20 +363,40 @@ static void execCommand(const char* line) {
  *           ブロッキング処理。最長フレームで約 68ms かかる。
  */
 static void sendCommand(uint8_t dest, IrCmd cmd, uint8_t data) {
-    // STEP 1: 24bit パケット生成
+    // STEP 1: SEQ と反復回数を決定
+    uint8_t seq;
+    uint8_t repeat;
+    if (cmd == IrCmd::SYNC) {
+        // SYNC は毎拍送信の自己回復型。SEQ は進めず 1 回のみ送る。
+        seq    = g_msgSeq;
+        repeat = 1;
+    } else {
+        // 論理コマンドごとに SEQ を +1（2bit ラップ）
+        g_msgSeq = (g_msgSeq + 1) & IR_SEQ_MAX;
+        seq      = g_msgSeq;
+        repeat   = IR_REPEAT_COUNT;
+    }
+
+    // STEP 2: 24bit パケット生成（拡張ハミング SEC-DED 符号化）
     const uint32_t packet = Packet::build(
         dest,
         static_cast<uint8_t>(cmd),
-        data
+        data,
+        seq
     );
 
-    // STEP 2: 赤外線送信
-    tx.sendFrame(packet);
+    // STEP 3: 赤外線送信（重要コマンドは同一フレームを連送）
+    for (uint8_t r = 0; r < repeat; r++) {
+        tx.sendFrame(packet);
+        if (r + 1 < repeat) delay(IR_REPEAT_GAP_MS);
+    }
 
     // デバッグ出力
     Serial.print(F("  [TX] dest=0x")); Serial.print(dest, HEX);
     Serial.print(F(" cmd=0x"));        Serial.print(static_cast<uint8_t>(cmd), HEX);
     Serial.print(F(" data="));         Serial.print(data);
+    Serial.print(F(" seq="));          Serial.print(seq);
+    Serial.print(F(" x"));             Serial.print(repeat);
     Serial.print(F(" pkt=0x"));        Serial.println(packet, HEX);
 }
 
