@@ -102,9 +102,9 @@ struct Instrument {
 };
 
 // ── 倍音テーブル（055/・ISHIMARU/ の Processing 音源から移植）──
-static constexpr float HARM_PIANO[]       = { 1.00f, 0.60f, 0.35f, 0.20f, 0.12f, 0.08f, 0.05f, 0.03f, 0.02f, 0.01f };
-static constexpr float HARM_TRUMPET[]     = { 1.00f, 1.00f, 0.85f, 0.85f, 0.75f, 0.75f, 0.65f, 0.55f, 0.45f, 0.30f };
-static constexpr float HARM_MOKKIN_MARI[] = { 1.00f, 0.00f, 0.50f };
+static constexpr float HARM_PIANO[]       = { 1.00f, 0.60f, 0.35f, 0.20f, 0.12f, 0.08f, 0.03f };
+static constexpr float HARM_TRUMPET[]     = { 1.00f, 0.90f, 0.85f, 0.70f, 0.55f, 0.45f, 0.30f, 0.20f, 0.15f, 0.10f };
+static constexpr float HARM_MOKKIN_MARI[] = { 1.00f, 0.05f, 0.40f, 0.05f, 0.15f };
 static constexpr float HARM_MOKKIN_SIRO[] = { 1.00f, 0.00f, 0.70f, 0.00f, 0.50f, 0.00f, 0.30f, 0.00f, 0.15f };
 // キック: kick1(55Hz) + kick2(110Hz) を等振幅で重ねた構成（ISHIMARU/kick_rizumu3）。
 //        基音=55Hz, 2倍音=110Hz を 1:1 で合成。
@@ -129,9 +129,9 @@ constexpr float SNARE_BODY_FREQ  = 180.0f;  ///< スネア胴鳴り [Hz]
 
 static constexpr Instrument INSTRUMENTS[INST_COUNT] = {
     //  name        harmonics          n   attack  decay  sustain release  noiseMix baseFreq
-    { "Piano",    HARM_PIANO,       10, 0.005f, 1.090f, 0.04f, 0.32f, 0.0f, 0.0f },
-    { "Trumpet",  HARM_TRUMPET,     10, 0.100f, 0.100f, 0.95f, 0.30f, 0.0f, 0.0f },
-    { "MokkinM",  HARM_MOKKIN_MARI,  3, 0.001f, 0.150f, 0.10f, 0.20f, 0.0f, 0.0f },
+    { "Piano",    HARM_PIANO,        7, 0.001f, 0.450f, 0.001f, 0.35f, 0.0f, 0.0f },
+    { "Trumpet",  HARM_TRUMPET,     10, 0.050f, 0.050f, 0.95f, 0.50f, 0.0f, 0.0f },
+    { "MokkinM",  HARM_MOKKIN_MARI,  5, 0.001f, 0.050f, 0.10f, 0.20f, 0.0f, 0.0f },
     { "MokkinS",  HARM_MOKKIN_SIRO,  9, 0.001f, 0.080f, 0.00f, 0.06f, 0.0f, 0.0f },
     // キック: ワンショット（sustain=0）。ISHIMARU の a0.001/d0.10 を踏まえ余韻を持たせる。
     { "Kick",     HARM_KICK,         2, 0.001f, 0.180f, 0.00f, 0.05f, 0.0f, KICK_FREQ },
