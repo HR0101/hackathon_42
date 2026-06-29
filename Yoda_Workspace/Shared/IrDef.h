@@ -6,13 +6,15 @@
  *          タイミング定数・ピン定義・パケット構造・コマンドenumを定義します。
  *          マスタ機・スレーブ機の両スケッチから共通でインクルードしてください。
  *
- * 【パケット構造 (24bit)】
- *  ┌─────────┬──────────┬────────────┬──────────────────────┐
- *  │  bit 3:0 │  bit 7:4 │  bit 15:8  │      bit 23:16       │
- *  │ 宛先(4b) │ CMD (4b) │ DATA (8b)  │ CHECK = upper⊕data   │
- *  └─────────┴──────────┴────────────┴──────────────────────┘
- *  upperByte = (dest & 0x0F) | ((cmd & 0x0F) << 4)
- *  checkByte = upperByte XOR data
+ * 【パケット構造 (24bit) — 拡張ハミング(24,18) SEC-DED】
+ *  ┌─────────┬──────────┬────────────┬──────────┬────────────┐
+ *  │  bit 3:0 │  bit 7:4 │  bit 15:8  │ bit 17:16│  bit 23:18 │
+ *  │ 宛先(4b) │ CMD (4b) │ DATA (8b)  │ SEQ (2b) │ PARITY(6b) │
+ *  └─────────┴──────────┴────────────┴──────────┴────────────┘
+ *  情報ビット = DST + CMD + DATA + SEQ = 18bit (bit17:0)
+ *  パリティ   = 6bit (bit23:18) : SEC 5bit (bit22:18) + 全体パリティ 1bit (bit23)
+ *  ※ 旧 CHECK バイト(8bit XOR検査)を SEQ(2bit)+ハミングパリティ(6bit)に置換。
+ *    1bit 訂正 / 2bit 検出 (SEC-DED) が可能。DST/CMD/DATA のビット位置は不変。
  *
  * 【対象ハードウェア】
  *  Arduino UNO R4 WiFi (Renesas RA4M1 / R7FA4M1AB3CFP)
@@ -57,20 +59,43 @@ constexpr uint16_t IR_TRAIL_MARK   = 562;
 // ============================================================
 //  パケット フィールド定義 (24bit)
 // ============================================================
-/** パケット総ビット数 */
+/** パケット総ビット数 (24bit 維持。NEC タイミング・送受信回路は不変) */
 constexpr uint8_t  IR_PACKET_BITS  = 24;
 
 // ── シフト量 (パケット内での各フィールドの開始ビット位置) ──
 constexpr uint8_t  IR_DEST_SHIFT   = 0;   ///< 宛先フィールド開始ビット
 constexpr uint8_t  IR_CMD_SHIFT    = 4;   ///< コマンドフィールド開始ビット
 constexpr uint8_t  IR_DATA_SHIFT   = 8;   ///< データフィールド開始ビット
-constexpr uint8_t  IR_CHECK_SHIFT  = 16;  ///< 検査フィールド開始ビット
+constexpr uint8_t  IR_SEQ_SHIFT    = 16;  ///< SEQ(連番)フィールド開始ビット
+constexpr uint8_t  IR_PARITY_SHIFT = 18;  ///< パリティ(ハミング)フィールド開始ビット
 
 // ── 抽出マスク ──
-constexpr uint32_t IR_DEST_MASK    = 0x0000000FUL;  ///< 宛先マスク  (4bit)
+constexpr uint32_t IR_DEST_MASK    = 0x0000000FUL;  ///< 宛先マスク   (4bit)
 constexpr uint32_t IR_CMD_MASK     = 0x000000F0UL;  ///< コマンドマスク (4bit)
 constexpr uint32_t IR_DATA_MASK    = 0x0000FF00UL;  ///< データマスク  (8bit)
-constexpr uint32_t IR_CHECK_MASK   = 0x00FF0000UL;  ///< 検査マスク   (8bit)
+constexpr uint32_t IR_SEQ_MASK     = 0x00030000UL;  ///< SEQ マスク    (2bit, bit17:16)
+constexpr uint32_t IR_PARITY_MASK  = 0x00FC0000UL;  ///< パリティマスク (6bit, bit23:18)
+/** 情報ビット全体マスク (DST+CMD+DATA+SEQ = 18bit, bit17:0) */
+constexpr uint32_t IR_INFO_MASK    = 0x0003FFFFUL;
+
+// ── SEQ (反復重複除去用の論理コマンド連番) ──
+/** SEQ フィールドのビット幅 (2bit → 0〜3 でラップ) */
+constexpr uint8_t  IR_SEQ_BITS     = 2;
+/** SEQ フィールドの最大値 (マスク用) */
+constexpr uint8_t  IR_SEQ_MAX      = 0x03;
+
+// ============================================================
+//  時間冗長（反復送信）定数
+//
+//  フレーム丸ごとの欠落・2bit 誤りによる廃棄分は内符号では救えないため、
+//  重要コマンド(PLAY/STOP/BPM)のみ同一フレームを複数回連送して救済する。
+//  受信側は SEQ による重複除去で二重実行を防ぐ。
+//  毎拍送信の SYNC は自己回復型のため反復せず帯域を温存する。
+// ============================================================
+/** 重要コマンドの反復送信回数 (SYNC は反復せず 1 回) */
+constexpr uint8_t  IR_REPEAT_COUNT  = 3;
+/** 反復フレーム間に空ける間隔 [ms] (受信側の取りこぼし低減用の短いギャップ) */
+constexpr uint16_t IR_REPEAT_GAP_MS = 12;
 
 // ============================================================
 //  受信 タイミング判定しきい値 [µs]

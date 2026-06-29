@@ -226,11 +226,13 @@ void Player::play(uint16_t bpm) {
     _playStartMs  = millis();
     _playCalledUs = micros();
     _firstNote    = true;
+    _syncAnchored = false;
     _errSum = _errAbsSum = _errMax = _errMin = 0;
     _errCount = 0;
     _eventIdx     = 0;
     _loopBase     = 0.0f;
     _noteSounding = false;
+    _songFinished = false;
     // Master 指示で即開始（自己遅延なし）。先頭イベントの拍を起点にする。
     _nextTrigBeat = (_role == ROLE_RHYTHM && _pattern) ? _pattern[0]
                                                        : SONG[0].startBeat;
@@ -273,7 +275,20 @@ void Player::setBpm(uint16_t bpm) {
 }
 
 // ============================================================
-//  sync() ── SYNC 受信時の位相ドリフト補正
+//  sync() ── SYNC 受信時の位相補正
+//
+//  【方式】絶対拍アライメント（beatCount 基準）
+//
+//  初回 SYNC でアンカーを確立する:
+//    _anchorMaster = beatCount   (Master の絶対拍カウンタ)
+//    _anchorSlave  = round(beat) (その時点の Slave 内部拍)
+//
+//  以降は Master の経過拍を uint8_t 演算でラップ込みに計算し、
+//  Slave が本来いるべき拍を求めて誤差を算出する。
+//
+//  誤差が 1/2 拍超 → パケットロスによる位相ズレ → ハード補正
+//  誤差が SYNC_CORRECT_MS 超 → 通常ドリフト → ダンプ補正
+//  それ以下 → 許容範囲内、補正なし
 // ============================================================
 void Player::sync(uint8_t beatCount) {
     if (!_playing) return;
@@ -281,23 +296,49 @@ void Player::sync(uint8_t beatCount) {
     const uint32_t now  = millis();
     const float    beat = _elapsedBeats(now);
 
-    // 最寄りの整数拍からのズレ（-0.5〜+0.5 拍）
-    const float frac = beat - roundf(beat);
-    const int32_t errMs = (int32_t)(frac * _beatMs);
+    // ── アンカー確立（PLAY 後の最初の SYNC のみ）──
+    if (!_syncAnchored) {
+        _anchorMaster = beatCount;
+        _anchorSlave  = (int32_t)roundf(beat);
+        _syncAnchored = true;
+        Serial.print(F("[SYNC] anchor  master=")); Serial.print(beatCount);
+        Serial.print(F("  slave≈")); Serial.println(_anchorSlave);
+        return;
+    }
+
+    // ── 期待拍を計算（uint8_t ラップを正しく処理）──
+    // masterElapsed: 0〜255 で正しく動く（255拍 ≈ 2分 @ 120BPM）
+    const uint8_t  masterElapsed = (uint8_t)(beatCount - _anchorMaster);
+    const float    expectedBeat  = (float)_anchorSlave + (float)masterElapsed;
+    const float    errBeat       = beat - expectedBeat;       // 正=進み過ぎ
+    const int32_t  errMs         = (int32_t)(errBeat * _beatMs);
 
     // ── 統計蓄積 ──
+    const int32_t absErr = (errMs >= 0) ? errMs : -errMs;
     _errSum    += errMs;
-    _errAbsSum += (errMs >= 0) ? errMs : -errMs;
+    _errAbsSum += absErr;
     if (_errCount == 0 || errMs > _errMax) _errMax = errMs;
     if (_errCount == 0 || errMs < _errMin) _errMin = errMs;
     _errCount++;
 
-    // SYNC_CORRECT_MS を超えるズレのみ補正。SYNC_DAMP で過補正（発散）を防ぐ。
-    if (errMs > SYNC_CORRECT_MS || errMs < -SYNC_CORRECT_MS) {
+    // ── 位相補正 ──
+    const int32_t halfBeatMs = (int32_t)(_beatMs * 0.5f);
+    if (absErr > halfBeatMs) {
+        // 1/2 拍超 = パケットロスによる多拍ズレ → 一気に正しい位置へ
+        _playStartMs = (uint32_t)((int32_t)_playStartMs + errMs);
+        Serial.print(F("[SYNC] hard  "));
+    } else if (absErr > SYNC_CORRECT_MS) {
+        // 通常ドリフト → ダンプ補正（発散防止）
         const int32_t correction = (int32_t)(errMs * SYNC_DAMP);
         _playStartMs = (uint32_t)((int32_t)_playStartMs + correction);
+        Serial.print(F("[SYNC] damp  "));
+    } else {
+        Serial.print(F("[SYNC] ok    "));
     }
-    Serial.print(F("[SYNC] beat=")); Serial.print(beatCount);
+
+    Serial.print(F("beat=")); Serial.print(beatCount);
+    Serial.print(F("  exp=")); Serial.print(expectedBeat, 1);
+    Serial.print(F("  act=")); Serial.print(beat, 1);
     Serial.print(F("  err="));
     if (errMs >= 0) Serial.print('+');
     Serial.print(errMs); Serial.println(F("ms"));
@@ -319,8 +360,9 @@ void Player::update() {
             _noteOn(0.0f);  // 周波数は楽器固定（キック=低音 / スネア=ノイズ）
             // ドラムは sustain=0 で自然減衰するため noteOff 不要（ワンショット）
             if (++_eventIdx >= _patternLen) {
-                _eventIdx  = 0;
-                _loopBase += SONG_LEN_BEATS;
+                // 1周完了 — 停止
+                stop();
+                return;
             }
             _nextTrigBeat = _loopBase + _pattern[_eventIdx];
         }
@@ -334,6 +376,12 @@ void Player::update() {
         _noteSounding = false;
     }
 
+    // 1周演奏済みかつ最後の音が鳴り終わったら停止
+    if (_songFinished && !_noteSounding) {
+        stop();
+        return;
+    }
+
     // 発火タイミングに達した音符を順に鳴らす（通常 1 回 / 拍未満）
     while (beat >= _nextTrigBeat) {
         const Note& n = SONG[_eventIdx];
@@ -343,10 +391,11 @@ void Player::update() {
             _noteOffBeat  = _nextTrigBeat + n.durBeat;
         }
 
-        // 次の音符へ。末尾まで来たらループ先頭へ戻る（輪唱の周回）
+        // 次の音符へ。末尾まで来たら1周完了フラグを立てて終了
         if (++_eventIdx >= SONG_LEN) {
-            _eventIdx  = 0;
-            _loopBase += SONG_LEN_BEATS;
+            _songFinished = true;
+            _nextTrigBeat = 1.0e9f;  // 以降の発音をブロック
+            break;
         }
         _nextTrigBeat = _loopBase + SONG[_eventIdx].startBeat;
     }

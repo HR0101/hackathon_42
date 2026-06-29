@@ -47,6 +47,7 @@ public:
     void setBpm(uint16_t bpm);    ///< テンポ変更
     void sync(uint8_t beatCount); ///< 位相補正
     void update();                ///< 拍スケジューラ（loop から毎回）
+    bool isPlaying() const { return _playing; }
 
 private:
     void  _setInstrument(uint8_t instId);  ///< ウェーブテーブル & ADSR を再構築
@@ -60,6 +61,11 @@ private:
     uint32_t _playStartMs = 0;       ///< play() を呼んだ時刻 [ms]
     uint32_t _playCalledUs = 0;      ///< play() を呼んだ時刻 [µs]（遅延計測用）
     bool     _firstNote   = true;    ///< 初回 noteOn 計測フラグ
+
+    // ── SYNC 位相補正アンカー ──
+    bool     _syncAnchored  = false; ///< 最初の SYNC でアンカーを確立済みか
+    uint8_t  _anchorMaster  = 0;     ///< アンカー時の Master beatCount
+    int32_t  _anchorSlave   = 0;     ///< アンカー時の slave 内部拍（整数）
 
     // ── SYNC 遅延統計 ──
     int32_t  _errSum     = 0;   ///< 誤差の合計 [ms]（正=進み, 負=遅れ）
@@ -78,4 +84,5 @@ private:
     float    _nextTrigBeat = 0.0f;   ///< 次の音符を鳴らす絶対拍
     bool     _noteSounding = false;  ///< 現在発音中か
     float    _noteOffBeat  = 0.0f;   ///< 現在の音符を消す絶対拍
+    bool     _songFinished = false;  ///< 1周演奏済みフラグ
 };
