@@ -46,10 +46,10 @@ class HackInstrument implements Instrument
   {
     wave = new Oscil ( frequency , 1.0f, wf ); 
     // ADSRのパラメータ設定 
-    float attackTime   = 0.1f; // アタック時間 (立ち上がり)
-    float decayTime    = 0.1f;  // ディケイ時間 (最大音量からサスティンへの減衰)
+    float attackTime   = 0.05f; // アタック時間 (立ち上がり)
+    float decayTime    = 0.05f;  // ディケイ時間 (最大音量からサスティンへの減衰)
     float sustainLevel = 0.95f;  // サスティンレベル (保持される音量の割合 0.0〜1.0)
-    float releaseTime  = 0.3f;  // リリース時間 (ノートオフ後の余韻)
+    float releaseTime  = 0.5f;  // リリース時間 (ノートオフ後の余韻)
     
     // ADSRインスタンスの作成 (最大音量, アタック, ディケイ, サスティン, リリース)
     adsr = new ADSR( maxAmp, attackTime, decayTime, sustainLevel, releaseTime );
@@ -85,15 +85,15 @@ void setup ()
      4096 , 
      new float[] { 
      1.00f, 
-     1.00f, 
+     0.90f, 
      0.85f, 
-     0.85f, 
-     0.75f, 
-     0.75f, 
-     0.65f, 
+     0.70f, 
      0.55f, 
      0.45f, 
-     0.30f 
+     0.30f, 
+     0.20f, 
+     0.15f,
+     0.10f 
    } 
   );
 }

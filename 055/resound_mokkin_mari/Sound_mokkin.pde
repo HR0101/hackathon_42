@@ -47,7 +47,7 @@ class HackInstrument implements Instrument
     wave = new Oscil ( frequency , 1.0f, wf ); 
     // ADSRのパラメータ設定 
     float attackTime   = 0.001f; // アタック時間 (立ち上がり)
-    float decayTime    = 0.15f;  // ディケイ時間 (最大音量からサスティンへの減衰)
+    float decayTime    = 0.05f;  // ディケイ時間 (最大音量からサスティンへの減衰)
     float sustainLevel = 0.1f;  // サスティンレベル (保持される音量の割合 0.0〜1.0)
     float releaseTime  = 0.2f;  // リリース時間 (ノートオフ後の余韻)
    
@@ -82,9 +82,11 @@ void setup ()
   currentWaveform = WavetableGenerator.gen10 ( 
      4096, 
      new float[] { 
-         1.00f,  // 基音
-         0.00f,  // 2倍音
-         0.50f,  // 3倍音
+     1.00f, 
+     0.05f, 
+     0.40f, 
+     0.05f, 
+     0.15f 
        } 
   );
 }
