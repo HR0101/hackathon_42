@@ -106,11 +106,13 @@ static constexpr float HARM_PIANO[]       = { 1.00f, 0.60f, 0.35f, 0.20f, 0.12f,
 static constexpr float HARM_TRUMPET[]     = { 1.00f, 0.90f, 0.85f, 0.70f, 0.55f, 0.45f, 0.30f, 0.20f, 0.15f, 0.10f };
 static constexpr float HARM_MOKKIN_MARI[] = { 1.00f, 0.05f, 0.40f, 0.05f, 0.15f };
 static constexpr float HARM_MOKKIN_SIRO[] = { 1.00f, 0.00f, 0.70f, 0.00f, 0.50f, 0.00f, 0.30f, 0.00f, 0.15f };
-// キック: kick1(55Hz) + kick2(110Hz) を等振幅で重ねた構成（ISHIMARU/kick_rizumu3）。
-//        基音=55Hz, 2倍音=110Hz を 1:1 で合成。
-static constexpr float HARM_KICK[]        = { 1.00f, 1.00f };
-// スネア胴鳴り: 180Hz の単一トーン（ISHIMARU/suneru の snareTone）。
-static constexpr float HARM_SNARE_BODY[]  = { 1.00f };
+// キック: 単一オシレータが 300Hz→40Hz へピッチスイープする構成（ISHIMARU/kiku_kansei2）。
+//        本エンジンはピッチスイープ非対応のため、音の大半を占める低域の
+//        整定周波数（≈45Hz）で単一トーンとして近似する。
+static constexpr float HARM_KICK[]        = { 1.00f };
+// スネア胴鳴り: 180Hz（基音）+ 900Hz（5倍音）の2層トーン（ISHIMARU/sunea_kansei2）。
+//              180Hz : 900Hz = 0.50 : 0.20 の振幅比で合成。
+static constexpr float HARM_SNARE_BODY[]  = { 0.50f, 0.00f, 0.00f, 0.00f, 0.20f };
 
 /** 楽器インデックス */
 enum InstrumentId : uint8_t {
@@ -123,9 +125,9 @@ enum InstrumentId : uint8_t {
     INST_COUNT
 };
 
-// 打楽器の基本周波数（ISHIMARU の値）
-constexpr float KICK_FREQ        = 55.0f;   ///< キック基音 [Hz]（2倍音 110Hz と合成）
-constexpr float SNARE_BODY_FREQ  = 180.0f;  ///< スネア胴鳴り [Hz]
+// 打楽器の基本周波数（ISHIMARU kiku_kansei2 / sunea_kansei2 の値）
+constexpr float KICK_FREQ        = 45.0f;   ///< キック整定周波数 [Hz]（ピッチスイープの低域を近似）
+constexpr float SNARE_BODY_FREQ  = 180.0f;  ///< スネア胴鳴り基音 [Hz]（5倍音=900Hz）
 
 static constexpr Instrument INSTRUMENTS[INST_COUNT] = {
     //  name        harmonics          n   attack  decay  sustain release  noiseMix baseFreq
@@ -133,23 +135,28 @@ static constexpr Instrument INSTRUMENTS[INST_COUNT] = {
     { "Trumpet",  HARM_TRUMPET,     10, 0.050f, 0.050f, 0.95f, 0.50f, 0.0f, 0.0f },
     { "MokkinM",  HARM_MOKKIN_MARI,  5, 0.001f, 0.050f, 0.10f, 0.20f, 0.0f, 0.0f },
     { "MokkinS",  HARM_MOKKIN_SIRO,  9, 0.001f, 0.080f, 0.00f, 0.06f, 0.0f, 0.0f },
-    // キック: ワンショット（sustain=0）。ISHIMARU の a0.001/d0.10 を踏まえ余韻を持たせる。
-    { "Kick",     HARM_KICK,         2, 0.001f, 0.180f, 0.00f, 0.05f, 0.0f, KICK_FREQ },
-    // スネア: ノイズ主体(0.7)＋180Hz胴鳴り(0.3)。ISHIMARU の比 0.5:0.25 に対応。
-    { "Snare",    HARM_SNARE_BODY,   1, 0.001f, 0.090f, 0.00f, 0.05f, 0.7f, SNARE_BODY_FREQ },
+    // キック: ワンショット（sustain=0）。kiku_kansei2 の attack≈3ms/decay(exp(-12t))を踏まえ、
+    //         わずかなノイズ(noiseMix)でアタック時のクリック感を近似する。
+    { "Kick",     HARM_KICK,         1, 0.003f, 0.220f, 0.00f, 0.05f, 0.12f, KICK_FREQ },
+    // スネア: sunea_kansei2 の noise*0.35 : body(0.5+0.2) 比から noiseMix≈0.33 に近似。
+    { "Snare",    HARM_SNARE_BODY,   5, 0.002f, 0.250f, 0.00f, 0.05f, 0.33f, SNARE_BODY_FREQ },
 };
 
 // ============================================================
 //  リズムパターン（リズム機が SONG の代わりに叩く拍）
-//  ── 1 ループ = SONG_LEN_BEATS(32拍) 内で叩く拍を列挙する ──
+//  ── 輪唱 3 回目（3号機）が終わる拍と同時に鳴り止むよう、
+//     Master の ROUND_START_BEAT[2]=16 拍 + SONG[] 最終音符の終端 30.5 拍
+//     = 絶対拍 46.5 まで、通常パターン（偶数=キック/奇数=スネア）を延長する。
 // ============================================================
-/** キック: 各小節の 1・3 拍目（偶数拍）= ドン・ドン */
+/** キック: 各小節の 1・3 拍目（偶数拍）= ドン・ドン。46.5 拍（輪唱3回目終了）まで */
 static constexpr float KICK_PATTERN[] = {
-    0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30
+    0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30,
+    32, 34, 36, 38, 40, 42, 44, 46
 };
-/** スネア: 各小節の 2・4 拍目（奇数拍）= バックビート タン・タン */
+/** スネア: 各小節の 2・4 拍目（奇数拍）= バックビート タン・タン。46.5 拍まで */
 static constexpr float SNARE_PATTERN[] = {
-    1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31
+    1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31,
+    33, 35, 37, 39, 41, 43, 45
 };
 constexpr uint8_t KICK_PATTERN_LEN  = sizeof(KICK_PATTERN)  / sizeof(KICK_PATTERN[0]);
 constexpr uint8_t SNARE_PATTERN_LEN = sizeof(SNARE_PATTERN) / sizeof(SNARE_PATTERN[0]);

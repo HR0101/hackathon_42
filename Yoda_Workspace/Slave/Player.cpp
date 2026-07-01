@@ -239,6 +239,13 @@ void Player::play(uint16_t bpm) {
 
     Serial.print(F("[Player] play BPM=")); Serial.print(bpm);
     Serial.print(F("  楽器=")); Serial.println(INSTRUMENTS[_instId].name);
+
+    if (ENABLE_TIMING_LOG) {
+        // 計測用ログ: PLAY を実行した実時刻（輪唱の入りタイミング計測の起点）
+        Serial.print(F("PLAY,")); Serial.print(_playStartMs);
+        Serial.print(','); Serial.print(bpm);
+        Serial.print(','); Serial.println(INSTRUMENTS[_instId].name);
+    }
 }
 
 void Player::stop() {
@@ -246,7 +253,7 @@ void Player::stop() {
     _noteSounding = false;
     _noteOff();
 
-    Serial.println(F("[Player] stop"));
+    Serial.print(F("STOP,")); Serial.println(millis());
     if (_errCount == 0) return;
 
     const int32_t avg    = _errSum    / (int32_t)_errCount;
@@ -258,6 +265,12 @@ void Player::stop() {
     Serial.print(F("  最大       : ")); Serial.print(_errMax); Serial.println(F(" ms"));
     Serial.print(F("  最小       : ")); Serial.print(_errMin); Serial.println(F(" ms"));
     Serial.println(F("============================="));
+    // 計測用ログ: 統計サマリを CSV でも出力（スクリプトでの集計用）
+    Serial.print(F("STOP_STATS,")); Serial.print(_errCount);
+    Serial.print(','); Serial.print(avg);
+    Serial.print(','); Serial.print(avgAbs);
+    Serial.print(','); Serial.print(_errMax);
+    Serial.print(','); Serial.println(_errMin);
 }
 
 void Player::setBpm(uint16_t bpm) {
@@ -301,8 +314,11 @@ void Player::sync(uint8_t beatCount) {
         _anchorMaster = beatCount;
         _anchorSlave  = (int32_t)roundf(beat);
         _syncAnchored = true;
-        Serial.print(F("[SYNC] anchor  master=")); Serial.print(beatCount);
-        Serial.print(F("  slave≈")); Serial.println(_anchorSlave);
+        if (ENABLE_TIMING_LOG) {
+            Serial.print(F("SYNC_ANCHOR,")); Serial.print(now);
+            Serial.print(','); Serial.print(beatCount);
+            Serial.print(','); Serial.println(_anchorSlave);
+        }
         return;
     }
 
@@ -323,25 +339,36 @@ void Player::sync(uint8_t beatCount) {
 
     // ── 位相補正 ──
     const int32_t halfBeatMs = (int32_t)(_beatMs * 0.5f);
+    const char* status;
+    bool isCorrection;
     if (absErr > halfBeatMs) {
         // 1/2 拍超 = パケットロスによる多拍ズレ → 一気に正しい位置へ
         _playStartMs = (uint32_t)((int32_t)_playStartMs + errMs);
-        Serial.print(F("[SYNC] hard  "));
+        status = "hard";
+        isCorrection = true;
     } else if (absErr > SYNC_CORRECT_MS) {
         // 通常ドリフト → ダンプ補正（発散防止）
         const int32_t correction = (int32_t)(errMs * SYNC_DAMP);
         _playStartMs = (uint32_t)((int32_t)_playStartMs + correction);
-        Serial.print(F("[SYNC] damp  "));
+        status = "damp";
+        isCorrection = true;
     } else {
-        Serial.print(F("[SYNC] ok    "));
+        status = "ok";
+        isCorrection = false;
     }
 
-    Serial.print(F("beat=")); Serial.print(beatCount);
-    Serial.print(F("  exp=")); Serial.print(expectedBeat, 1);
-    Serial.print(F("  act=")); Serial.print(beat, 1);
-    Serial.print(F("  err="));
-    if (errMs >= 0) Serial.print('+');
-    Serial.print(errMs); Serial.println(F("ms"));
+    // ── 計測用ログ（CSV, 1行/拍） ──
+    // hard/damp（補正あり）は毎回出力する。ok は ENABLE_TIMING_LOG のときのみ
+    // 出力する（毎拍ブロッキングして loop() の応答が遅れ、高 BPM で音符の
+    // 発音を取りこぼす一因になるため、既定では計測時だけ有効にする）。
+    if (isCorrection || ENABLE_TIMING_LOG) {
+        Serial.print(F("SYNC,")); Serial.print(now);
+        Serial.print(','); Serial.print(status);
+        Serial.print(','); Serial.print(beatCount);
+        Serial.print(','); Serial.print(expectedBeat, 2);
+        Serial.print(','); Serial.print(beat, 2);
+        Serial.print(','); Serial.println(errMs);
+    }
 }
 
 // ============================================================
@@ -358,6 +385,15 @@ void Player::update() {
         if (!_pattern || _patternLen == 0) return;
         while (beat >= _nextTrigBeat) {
             _noteOn(0.0f);  // 周波数は楽器固定（キック=低音 / スネア=ノイズ）
+            if (ENABLE_TIMING_LOG) {
+                // 計測用ログ: 発音時刻の目標拍からのズレ [ms]
+                const float actualMs   = (float)(now - _playStartMs);
+                const float expectedMs = _nextTrigBeat * _beatMs;
+                Serial.print(F("HIT,")); Serial.print(now);
+                Serial.print(','); Serial.print(_eventIdx);
+                Serial.print(','); Serial.print(_nextTrigBeat, 2);
+                Serial.print(','); Serial.println(actualMs - expectedMs, 1);
+            }
             // ドラムは sustain=0 で自然減衰するため noteOff 不要（ワンショット）
             if (++_eventIdx >= _patternLen) {
                 // 1周完了 — 停止
@@ -389,6 +425,17 @@ void Player::update() {
             _noteOn(n.freq);
             _noteSounding = true;
             _noteOffBeat  = _nextTrigBeat + n.durBeat;
+
+            if (ENABLE_TIMING_LOG) {
+                // 計測用ログ: 発音時刻の目標拍からのズレ [ms]（輪唱の入りタイミング計測用）
+                const float actualMs   = (float)(now - _playStartMs);
+                const float expectedMs = _nextTrigBeat * _beatMs;
+                Serial.print(F("NOTE,")); Serial.print(now);
+                Serial.print(','); Serial.print(_eventIdx);
+                Serial.print(','); Serial.print(_nextTrigBeat, 2);
+                Serial.print(','); Serial.print(n.freq, 1);
+                Serial.print(','); Serial.println(actualMs - expectedMs, 1);
+            }
         }
 
         // 次の音符へ。末尾まで来たら1周完了フラグを立てて終了

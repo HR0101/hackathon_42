@@ -18,3 +18,12 @@
  *         出せないため、倍音合成には A0 を使用する。
  */
 constexpr uint8_t AUDIO_PIN = A0;
+
+/**
+ * @brief 計測用シリアルログの ON/OFF
+ *
+ * true にすると、PLAY 受信・発音イベント・SYNC 誤差を CSV 形式で
+ * 毎回シリアル出力する（輪唱の入りタイミングやテンポ精度の計測用）。
+ * 本番演奏でシリアル出力のオーバーヘッドを避けたい場合は false にする。
+ */
+constexpr bool ENABLE_TIMING_LOG = true;

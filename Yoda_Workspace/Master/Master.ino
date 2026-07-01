@@ -374,7 +374,11 @@ static void sendCommand(uint8_t dest, IrCmd cmd, uint8_t data) {
         // 論理コマンドごとに SEQ を +1（2bit ラップ）
         g_msgSeq = (g_msgSeq + 1) & IR_SEQ_MAX;
         seq      = g_msgSeq;
-        repeat   = IR_REPEAT_COUNT;
+        // 再生中の PLAY/BPM は拍タイミングに直結するため 1 回のみ送信し、
+        // IR_REPEAT_COUNT 回のブロッキング（最大 ~200ms）が拍のスケジューリングを
+        // 乱すのを防ぐ（バースト送信や見かけ上のテンポ変動の原因になるため）。
+        // STOP は再生タイミングと無関係なので、従来通り確実性を優先して連送する。
+        repeat = (g_playing && cmd != IrCmd::STOP) ? 1 : IR_REPEAT_COUNT;
     }
 
     // STEP 2: 24bit パケット生成（拡張ハミング SEC-DED 符号化）

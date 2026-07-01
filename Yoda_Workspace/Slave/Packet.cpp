@@ -88,7 +88,7 @@ uint32_t Packet::build(uint8_t dest, uint8_t cmd, uint8_t data, uint8_t seq) {
 //  Packet::parse — 24 ビットパケット復号 (シンドローム訂正/検出)
 // ============================================================
 ParseResult Packet::parse(uint32_t raw, uint8_t &dest, uint8_t &cmd,
-                          uint8_t &data, uint8_t &seq) {
+                          uint8_t &data, uint8_t &seq, int8_t* correctedBit) {
     // ─── Step 1: 受信した情報ビットとパリティを分離 ────────────
     const uint32_t info  = raw & IR_INFO_MASK;                    // bit17:0
     const uint8_t  sRecv = (raw >> IR_PARITY_SHIFT) & 0x1F;       // SEC 5bit : bit22:18
@@ -103,6 +103,8 @@ ParseResult Packet::parse(uint32_t raw, uint8_t &dest, uint8_t &cmd,
     // ─── Step 3: 判定と訂正 ────────────────────────────────────
     uint32_t corrected = raw;
     ParseResult result;
+    // 計測用: 反転した物理ビット位置 (bit0〜23)。-1=誤りなし, -2=訂正不能(多重誤り)。
+    int8_t bitPos = -1;
 
     if (S == 0 && P == 0) {
         // 誤りなし
@@ -113,6 +115,7 @@ ParseResult Packet::parse(uint32_t raw, uint8_t &dest, uint8_t &cmd,
         if (S == 0) {
             // 全体パリティビット (bit23) 自身の化け。情報ビットは無傷。
             result = ParseResult::CORRECTED;
+            bitPos = IR_PARITY_SHIFT + 5;  // bit23
         } else {
             // S が情報ビットの列ベクトル c_k と一致するか探索する
             int8_t idx = -1;
@@ -123,20 +126,29 @@ ParseResult Packet::parse(uint32_t raw, uint8_t &dest, uint8_t &cmd,
                 // 情報ビット i_idx の化け → 反転して訂正
                 corrected ^= (1UL << idx);
                 result = ParseResult::CORRECTED;
+                bitPos = idx;  // 情報ビットの列番号 = 物理ビット位置 (bit0〜17)
             } else if (S == 1 || S == 2 || S == 4 || S == 8 || S == 16) {
                 // SEC パリティビット自身の化け。情報ビットは無傷。
                 result = ParseResult::CORRECTED;
+                // S = 2^n → SEC パリティの n ビット目 → 物理ビット位置 = 18+n
+                uint8_t n = 0;
+                for (uint8_t sh = S; sh > 1; sh >>= 1) n++;
+                bitPos = IR_PARITY_SHIFT + n;
             } else {
                 // 単一誤りなら必ず上記いずれかに該当する。該当なし = 多重誤り。
                 // 誤った符号語で動作させないため安全側で廃棄する。
                 result = ParseResult::UNCORRECTABLE;
+                bitPos = -2;
             }
         }
 
     } else {
         // S != 0 かつ P == 0 → 偶数 (2 重) 誤り → 訂正せず廃棄 (安全側)
         result = ParseResult::UNCORRECTABLE;
+        bitPos = -2;
     }
+
+    if (correctedBit) *correctedBit = bitPos;
 
     // ─── Step 4: (訂正後の) 各フィールドを抽出する ─────────────
     //  UNCORRECTABLE のときは値が信頼できないため抽出しない。

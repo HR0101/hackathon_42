@@ -72,14 +72,22 @@ public:
      * @brief  24 ビットパケットを復号し、誤り訂正/検出を行う
      *
      * @param  raw   受信・デコードされた 24 ビット生データ
-     * @param  dest  [出力] 宛先アドレス (4bit)
-     * @param  cmd   [出力] コマンド     (4bit)
-     * @param  data  [出力] データ       (8bit)
-     * @param  seq   [出力] 論理コマンド連番 (2bit)
+     * @param  dest        [出力] 宛先アドレス (4bit)
+     * @param  cmd         [出力] コマンド     (4bit)
+     * @param  data        [出力] データ       (8bit)
+     * @param  seq         [出力] 論理コマンド連番 (2bit)
+     * @param  correctedBit [出力・任意] 計測用: 訂正/検出の詳細を bit 位置で返す。
+     *                      OK            → -1 (誤りなし)
+     *                      CORRECTED     → 反転した物理ビット位置 (0〜23。1bit のみ)
+     *                      UNCORRECTABLE → -2 (2bit 以上の誤り。位置は特定不能)
+     *                      nullptr なら書き込まない。
      * @return ParseResult (OK / CORRECTED / UNCORRECTABLE)
      *
      * @note  UNCORRECTABLE のとき dest/cmd/data/seq の内容は不定です。
      *        OK / CORRECTED のときは (必要なら訂正済みの) 正しい値が入ります。
+     *        SEC-DED は単一ビット誤りしか訂正できないため、CORRECTED は常に
+     *        「1 ビットだけ」の誤りです（何ビット化けたかは自明に 1、
+     *        重要なのはどのビットかなので correctedBit で返す）。
      *
      * @example
      *   uint8_t dest, cmd, data, seq;
@@ -89,5 +97,6 @@ public:
      *   }
      */
     static ParseResult parse(uint32_t raw, uint8_t &dest, uint8_t &cmd,
-                             uint8_t &data, uint8_t &seq);
+                             uint8_t &data, uint8_t &seq,
+                             int8_t* correctedBit = nullptr);
 };

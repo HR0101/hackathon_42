@@ -154,18 +154,33 @@ void loop() {
     //   b) 拡張ハミングでシンドロームを計算し誤りを判定
     //   c) OK / CORRECTED（単一誤り訂正済み）/ UNCORRECTABLE を返す
     uint8_t dest, cmd, data, seq;
-    const ParseResult res = Packet::parse(rawPacket, dest, cmd, data, seq);
+    int8_t  correctedBit;  // 計測用: 訂正/検出した物理ビット位置（-1=誤りなし, -2=訂正不能）
+    const ParseResult res = Packet::parse(rawPacket, dest, cmd, data, seq, &correctedBit);
 
     if (res == ParseResult::UNCORRECTABLE) {
       // 2bit 誤り等で訂正不能 → 安全側で廃棄する
       Serial.print(F("[ERR] 訂正不能パケット破棄 raw=0x"));
       Serial.println(rawPacket, HEX);
+      if (ENABLE_TIMING_LOG) {
+        // 計測用ログ: 訂正不能（2bit以上の誤り。具体的なビット数/位置は特定不能）
+        Serial.print(F("FEC,")); Serial.print(millis());
+        Serial.print(F(",UNCORRECTABLE,raw=0x")); Serial.println(rawPacket, HEX);
+      }
 
     } else {
       // OK または CORRECTED（単一誤りを訂正済み）→ 受理する
       if (res == ParseResult::CORRECTED) {
-        Serial.print(F("[FEC] 単一ビット誤りを訂正 raw=0x"));
+        Serial.print(F("[FEC] 単一ビット誤りを訂正 bit="));
+        Serial.print(correctedBit);
+        Serial.print(F(" raw=0x"));
         Serial.println(rawPacket, HEX);
+        if (ENABLE_TIMING_LOG) {
+          // 計測用ログ: 訂正されたビット数（SEC-DEDは常に1bit）と物理ビット位置
+          Serial.print(F("FEC,")); Serial.print(millis());
+          Serial.print(F(",CORRECTED,bits=1,bitPos="));
+          Serial.print(correctedBit);
+          Serial.print(F(",raw=0x")); Serial.println(rawPacket, HEX);
+        }
       }
 
       // ── 3. 宛先フィルタリング ──────────────────────────
