@@ -21,10 +21,10 @@ void setup() {
   stepInterval = (60000.0 / bpm) / 12.0;
 
 // 4つ打ち
-pattern[0]  = true;
-pattern[12] = true;
-pattern[24] = true;
-pattern[36] = true;
+pattern[6]  = true;
+pattern[18] = true;
+pattern[30] = true;
+pattern[42] = true;
 
 }
 

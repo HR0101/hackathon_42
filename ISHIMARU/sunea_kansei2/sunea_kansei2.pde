@@ -21,10 +21,10 @@ void setup() {
 
 lastStep = millis();
   // スネア
-snare[0]  = true;
-snare[12]  = true;
-snare[24] = true;
-snare[36] = true;
+snare[6]  = true;
+snare[18]  = true;
+snare[30] = true;
+snare[42] = true;
 
 }
 
