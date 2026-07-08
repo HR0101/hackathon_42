@@ -100,3 +100,4 @@ class ExactKick implements AudioSignal {
   }
   public void generate(float[] s) { generate(s, s); }
 }
+
